@@ -59,6 +59,18 @@ npx firebase-tools deploy --only hosting --project "$PROJECT_ID"
 Verified end-to-end with a temporary test user: create agent → condition node → `fast` or `reasoning` group → Gemini → publish → run published → delete.
 Idle cost is close to zero (Cloud Run min-instances 0, no Cloud SQL / Redis yet).
 
+## 1c. CI/CD (GitHub Actions → Firebase Hosting)
+
+`.github/workflows/firebase-hosting.yml` builds `mvp/frontend` and deploys it to the `tcvgh-agent-builder` site on
+every push to `main` that touches the frontend; pull requests get a temporary preview URL. One-time setup:
+
+```bash
+source infra/env.sh && bash infra/07-github-cicd.sh   # deploy SA + roles, key → GitHub secret, VITE_* → GitHub secrets
+```
+
+Firebase **App Hosting** is not used: it expects a server-rendered Node app (Next.js/Angular) and cannot express the
+`/api/**` → Cloud Run rewrite. The Vite SPA belongs on classic Hosting.
+
 ## 2. What each component does
 
 **LiteLLM** (`litellm/config.yaml`) exposes one OpenAI-compatible endpoint with model *groups*
