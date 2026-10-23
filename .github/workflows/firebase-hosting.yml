@@ -53,4 +53,5 @@ jobs:
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_CLOUD_SA_SANDBOX_1 }}
           projectId: cloud-sa-sandbox-1
           entryPoint: mvp/frontend
-          channelId: ${{ github.event_name == 'push' && 'live' || '' }}
+          # push / manual run -> live site; pull_request -> auto-named preview channel
+          channelId: ${{ github.event_name == 'pull_request' && '' || 'live' }}
