@@ -17,7 +17,8 @@ fi
 
 echo "1/3 grant roles to $SA"
 # firebasehosting.admin: upload + release the site.  run.viewer: validate the /api/** -> Cloud Run rewrite.
-for r in roles/firebasehosting.admin roles/run.viewer; do
+# serviceusage.serviceUsageViewer: the CLI checks that firebasehosting.googleapis.com is enabled (403 without it).
+for r in roles/firebasehosting.admin roles/run.viewer roles/serviceusage.serviceUsageViewer; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:${SA}" --role="$r" --condition=None --quiet >/dev/null
   echo "   granted $r"
 done
