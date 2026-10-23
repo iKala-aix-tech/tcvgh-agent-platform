@@ -1,0 +1,33 @@
+# Source this file: `source infra/env.sh`
+# Everything below is a name or a knob; nothing here creates resources.
+
+export PROJECT_ID="cloud-sa-sandbox-1"
+export REGION="asia-east1"                      # Taiwan; matches diagram
+# Vertex AI Gemini is NOT served from asia-east1 (verified 2026-10-23); use the global endpoint.
+export VERTEX_LOCATION="global"
+export PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)' 2>/dev/null)"
+
+# Firestore / GCS
+export FIRESTORE_LOCATION="asia-east1"
+# Named database: the sandbox "(default)" DB is in nam5 (US) and shared with other teams.
+export FIRESTORE_DATABASE="tcvgh-agent-platform"
+export UPLOAD_BUCKET="${PROJECT_ID}-tcvgh-agent-uploads"
+
+# Artifact Registry + Cloud Run service names
+export AR_REPO="tcvgh-agent-platform"
+export LITELLM_SERVICE="tcvgh-litellm"
+export BACKEND_SERVICE="tcvgh-platform-api"
+
+# Service accounts (short names)
+export LITELLM_SA="tcvgh-litellm-sa"
+export BACKEND_SA="tcvgh-backend-sa"
+
+# Who may sign in. Comma-separated Google Workspace domains.
+# For the sandbox we allow iKala; for TCVGH replace with their Workspace domain.
+export ALLOWED_DOMAINS="ikala.ai"
+
+# De-identification (option B). Leave false until a KMS key exists and infra/06-deid-key.sh has run.
+export DEID_ENABLED="false"
+
+gcloud config set project "$PROJECT_ID" >/dev/null
+echo "env: project=$PROJECT_ID number=$PROJECT_NUMBER region=$REGION"
