@@ -18,8 +18,8 @@ gcloud run deploy "$BACKEND_SERVICE" \
   --service-account "${BACKEND_SA}@${PROJECT_ID}.iam.gserviceaccount.com" \
   --allow-unauthenticated \
   --network default --subnet default --vpc-egress all-traffic \
-  --cpu 1 --memory 1Gi --min-instances 0 --max-instances 5 --concurrency 40 --timeout 300 \
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},REGION=${REGION},LITELLM_BASE_URL=${LITELLM_URL},FIRESTORE_DATABASE=${FIRESTORE_DATABASE},UPLOAD_BUCKET=${UPLOAD_BUCKET},ALLOWED_DOMAINS=${ALLOWED_DOMAINS},DEID_ENABLED=${DEID_ENABLED}" \
+  --cpu 1 --memory 2Gi --min-instances 0 --max-instances 5 --concurrency 40 --timeout 300 \
+  --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},REGION=${REGION},LITELLM_BASE_URL=${LITELLM_URL},FIRESTORE_DATABASE=${FIRESTORE_DATABASE},UPLOAD_BUCKET=${UPLOAD_BUCKET},ALLOWED_DOMAINS=${ALLOWED_DOMAINS},DEID_ENABLED=${DEID_ENABLED},RAG_ENABLED=${RAG_ENABLED},RAG_LOCATION=${RAG_LOCATION},RAG_EMBEDDING_MODEL=${RAG_EMBEDDING_MODEL}" \
   --set-secrets "LITELLM_API_KEY=litellm-master-key:latest"
 
 BACKEND_URL="$(gcloud run services describe "$BACKEND_SERVICE" --region "$REGION" --format='value(status.url)')"

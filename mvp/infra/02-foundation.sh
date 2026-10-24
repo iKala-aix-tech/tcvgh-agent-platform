@@ -19,6 +19,30 @@ else
   echo "firestore: agents index exists"
 fi
 
+# Indexes added 2026-10-24 (hub visibility + audit page + knowledge):
+#   agents: status == published ORDER BY updated_at DESC          (hub: everyone's published agents)
+#   audit:  actor == X ORDER BY at DESC                           (audit page, builder view)
+#   audit:  action == X AND at >= T                               (hub stat: runs today)
+#   audit:  actor == X AND action == Y ORDER BY at DESC           (audit page with action filter)
+ensure_index() { # collection, then field=order pairs; "already exists" is not an error
+  local col="$1"; shift
+  local args=()
+  for f in "$@"; do args+=(--field-config="field-path=${f%%=*},order=${f##*=}"); done
+  local out
+  if out="$(gcloud firestore indexes composite create --database="$FIRESTORE_DATABASE" --collection-group="$col" \
+      --query-scope=COLLECTION "${args[@]}" --async 2>&1)"; then
+    echo "firestore: $col index ($*) creating"
+  elif grep -q "ALREADY_EXISTS" <<<"$out"; then
+    echo "firestore: $col index ($*) exists"
+  else
+    echo "$out" >&2; return 1
+  fi
+}
+ensure_index agents status=ascending updated_at=descending
+ensure_index audit actor=ascending at=descending
+ensure_index audit action=ascending at=ascending
+ensure_index audit actor=ascending action=ascending at=descending
+
 # --- Upload bucket: uniform access, no public, versioning for audit --------------------
 if ! gcloud storage buckets describe "gs://$UPLOAD_BUCKET" >/dev/null 2>&1; then
   gcloud storage buckets create "gs://$UPLOAD_BUCKET" \
@@ -52,8 +76,11 @@ for ROLE in roles/aiplatform.user roles/secretmanager.secretAccessor roles/loggi
   gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:${LITELLM_SA_EMAIL}" --role="$ROLE" --condition=None >/dev/null
 done
 
-# Backend: Firestore, the upload bucket only, secrets, DLP (de-identify), invoke LiteLLM.
-for ROLE in roles/datastore.user roles/secretmanager.secretAccessor roles/dlp.user roles/logging.logWriter roles/run.invoker; do
+# Backend: Firestore, the upload bucket only, secrets, DLP (de-identify), invoke LiteLLM, RAG Engine.
+# roles/aiplatform.user: Vertex AI RAG Engine corpora (knowledge). Files are uploaded directly by the backend,
+# so the RAG service agent needs no access to our bucket.
+# roles/secretmanager.admin: connector credentials are created/deleted by the API (one secret per credential field).
+for ROLE in roles/datastore.user roles/secretmanager.secretAccessor roles/secretmanager.admin roles/dlp.user roles/logging.logWriter roles/run.invoker roles/aiplatform.user; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:${BACKEND_SA_EMAIL}" --role="$ROLE" --condition=None >/dev/null
 done
 gcloud storage buckets add-iam-policy-binding "gs://$UPLOAD_BUCKET" \

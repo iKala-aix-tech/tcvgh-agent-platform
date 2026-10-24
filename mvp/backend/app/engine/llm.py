@@ -36,9 +36,14 @@ def _client() -> OpenAI:
 
 
 def complete(*, group: str, system: str, messages: list[dict], agent_id: str, user_id: str,
-             temperature: float = 0.3) -> tuple[str, str]:
+             temperature: float = 0.3, top_p: float | None = None, json_mode: bool = False) -> tuple[str, str]:
     """Return (reply_text, model_actually_used). `group` is a LiteLLM model group alias."""
     client = _client()
+    kwargs: dict = {}
+    if top_p is not None:
+        kwargs["top_p"] = top_p
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
     resp = client.chat.completions.create(
         model=group,
         messages=[{"role": "system", "content": system}, *messages],
@@ -46,6 +51,7 @@ def complete(*, group: str, system: str, messages: list[dict], agent_id: str, us
         user=user_id,
         # LiteLLM reads these for spend attribution and tag-based routing.
         extra_body={"metadata": {"agent_id": agent_id, "model_group": group, "tags": [f"agent:{agent_id}"]}},
+        **kwargs,
     )
     text = resp.choices[0].message.content or ""
     return text, getattr(resp, "model", group)

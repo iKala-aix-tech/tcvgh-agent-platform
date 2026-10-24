@@ -1,7 +1,8 @@
 # TCVGH Agent Platform — MVP build (sandbox: `cloud-sa-sandbox-1`)
 
-This folder is the runnable MVP that matches diagram v0.3. It is deliberately small:
-three deployables and a handful of `gcloud` scripts, no Terraform yet.
+This folder is the runnable MVP that matches diagram v0.3 plus the Stitch design
+(`../stitch_tcvgh_agent_studio`, "Clinical Jade"). It is deliberately small:
+three deployables and a handful of `gcloud` scripts, no Terraform.
 
 ```
 mvp/
@@ -91,9 +92,42 @@ out until credentials / VPN exist. Fallback chains are declared under `router_se
   `agent_id`, `model_group` and `user` for spend attribution. Known gap: the trace shows the
   group alias, not the concrete model; read LiteLLM's `x-litellm-model-id` response header to fix.
 
-**Frontend** (`frontend/src`) — Google sign-in gate, agent list, and the builder page:
-left panel (name, description, instructions, model group, routing policy, connectors),
-React Flow canvas in the center, test chat on the right.
+**Knowledge** (`backend/app/engine/rag.py`, `routers/knowledge.py`) — Vertex AI **RAG Engine**, one corpus
+per agent, created lazily on the first upload. Files go to the upload bucket (audit copy) and are pushed with
+`upload_file` (direct upload, so the RAG service agent needs no bucket IAM); RAG Engine chunks and embeds them
+with `text-multilingual-embedding-002`. The `knowledge` canvas node calls `retrieve_contexts` and the next LLM step
+is grounded with the chunks; replies carry `citations`. Uses the `google-cloud-agentplatform` client
+(`vertexai.rag` is deprecated). asia-east1 is a *Preview* region for RAG Engine (checked 2026-10-24).
+Verified 2026-10-24: create corpus → upload → retrieve → delete all work in asia-east1. The first corpus in a
+project takes ~2 min (managed DB provisioning); afterwards corpus ≈ 22 s, small upload ≈ 23 s. An upload issued
+immediately after corpus creation can return empty; the backend retries up to 3×.
+
+**Sharing** — publish == hospital-wide. `/api/agents` returns your agents plus everyone's published agents;
+non-owners can run the published snapshot but not edit. Publish refuses an invalid flow (`validate_flow`).
+
+**Frontend** (`frontend/src`) — React Router + Tailwind (tokens in `tailwind.config.js` from the design system):
+- `/hub` Agent Hub: stat tiles, search, category filters, specialty cards.
+- `/studio/:id` Agent Studio: core attributes, temperature / top-p, instructions, **knowledge panel** (upload to
+  RAG), React Flow canvas with the design's node palette (HIS/EMR, knowledge, LLM, PII mask, condition,
+  structured output, connector, approval, output), flow validation banner, cost / latency estimate.
+- `/sandbox/:id` Playground with preset test cases, citations, trace, and the **publish to Hub** action.
+- `/knowledge` library of every file on agents you can see; `/audit` the Firestore audit collection.
+- `VITE_MOCK_API=1` runs the whole UI on in-memory data with no sign-in (design review / demos).
+  Add `?login` to preview the login page in that mode.
+
+**Connectors** (`backend/app/engine/connectors.py`, `routers/connectors.py`, UI `/connectors`) — shared hospital-wide
+objects; anyone can list and attach, only the owner or an admin edits / tests / deletes. Each type has a field spec
+(which fields, which are secrets, which actions) so the setup page is generated, not hand-built. Credentials go to
+**Secret Manager** (`tcvgh-conn-<id>-<field>`), Firestore keeps only the name, values never return to the browser.
+Real today: `mcp` (Streamable HTTP JSON-RPC, tools discovered by the test button), `webhook`, `slack`, `teams`,
+`notion`. Catalog-only: Gmail / Calendar / Drive (OAuth flow next), HIS FHIR, PACS. The canvas `tool` node picks a
+connector + action; writes should sit behind an approval node. Every invocation is audited (`connector.invoke`).
+Legacy SSE-only MCP servers are not supported. Decided 2026-10-24: explicit tool nodes only, no LLM tool-calling yet.
+
+Node status: `knowledge`, `structured_output` (JSON mode), `pii_mask` (same DLP engine as ingress), `condition` and
+`tool` (via connectors) are real; `his_emr` is a stub until the FHIR gateway exists.
+A per-agent "deploy to Cloud Run" button was considered and dropped (2026-10-24): agents already run on
+the shared platform API, so another container per agent adds cost and no value.
 
 ## 3. Local development
 
@@ -103,7 +137,20 @@ cd backend && uv sync && cp .env.example .env
 uv run uvicorn app.main:app --reload --port 8080
 # frontend (proxies /api to :8080)
 cd frontend && npm run dev
+# frontend only, no backend / sign-in (mock data)
+cd frontend && VITE_MOCK_API=1 npm run dev
 ```
+
+## 3b. Upgrading the deployed sandbox to this version
+
+```bash
+source infra/env.sh
+bash infra/02-foundation.sh      # adds roles/aiplatform.user + roles/secretmanager.admin to the backend SA + 4 Firestore indexes
+bash infra/04-deploy-backend.sh  # new env vars RAG_ENABLED / RAG_LOCATION / RAG_EMBEDDING_MODEL, 2 GiB memory
+# frontend deploys from GitHub Actions on push to main (or: cd frontend && npm run build && npx firebase-tools deploy --only hosting)
+```
+Firestore indexes build asynchronously; the hub's "published" query and the audit page return errors with an
+index-creation link until they finish (a few minutes).
 
 ## 4. Hardening checklist before TCVGH data touches this
 - [ ] `DEID_ENABLED=true` with a KMS key owned by TCVGH; test infoTypes on Chinese records.

@@ -29,5 +29,10 @@ export ALLOWED_DOMAINS="ikala.ai"
 # De-identification (option B). Leave false until a KMS key exists and infra/06-deid-key.sh has run.
 export DEID_ENABLED="false"
 
+# Knowledge: Vertex AI RAG Engine. asia-east1 is a Preview region for RAG Engine (checked 2026-10-24).
+export RAG_ENABLED="true"
+export RAG_LOCATION="asia-east1"
+export RAG_EMBEDDING_MODEL="publishers/google/models/text-multilingual-embedding-002"
+
 gcloud config set project "$PROJECT_ID" >/dev/null
 echo "env: project=$PROJECT_ID number=$PROJECT_NUMBER region=$REGION"

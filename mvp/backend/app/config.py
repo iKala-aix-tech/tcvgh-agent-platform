@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     deid_kms_wrapped_key: str = ""
     deid_kms_key_name: str = ""
 
+    # Knowledge (Vertex AI RAG Engine). asia-east1 is a Preview region for RAG Engine (checked 2026-10-24).
+    rag_enabled: bool = True
+    rag_location: str = "asia-east1"
+    # Multilingual embeddings so Chinese clinical documents retrieve well.
+    rag_embedding_model: str = "publishers/google/models/text-multilingual-embedding-002"
+    rag_chunk_size: int = 512
+    rag_chunk_overlap: int = 100
+    rag_top_k: int = 5
+    max_upload_mb: int = 25
+
     @property
     def allowed_domain_list(self) -> list[str]:
         return [d.strip().lower() for d in self.allowed_domains.split(",") if d.strip()]

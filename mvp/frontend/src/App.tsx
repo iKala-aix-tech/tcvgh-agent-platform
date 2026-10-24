@@ -1,43 +1,48 @@
 import { useEffect, useState } from "react";
 import { onAuthStateChanged, type User } from "firebase/auth";
-import { auth, signInWithGoogle, signOut } from "./firebase";
-import AgentList from "./pages/AgentList";
-import AgentBuilder from "./pages/AgentBuilder";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { auth } from "./firebase";
+import { api } from "./api";
+import Shell from "./components/Shell";
+import Login from "./pages/Login";
+import Hub from "./pages/Hub";
+import Studio from "./pages/Studio";
+import Sandbox from "./pages/Sandbox";
+import Knowledge from "./pages/Knowledge";
+import Audit from "./pages/Audit";
+import Connectors from "./pages/Connectors";
+import ConnectorSetup from "./pages/ConnectorSetup";
+import { Spinner } from "./components/ui";
+import { MOCK, mockUser } from "./mock";
 
 export default function App() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
-  const [agentId, setAgentId] = useState<string | null>(null);
-  const [err, setErr] = useState("");
+  const [role, setRole] = useState("builder");
 
-  useEffect(() => onAuthStateChanged(auth, setUser), []);
+  useEffect(() => (MOCK ? setUser(mockUser as unknown as User) : onAuthStateChanged(auth, setUser)), []);
+  useEffect(() => { if (user) api.me().then((m) => setRole(m.role)).catch(() => setRole("builder")); }, [user]);
 
-  if (user === undefined) return <div className="login">載入中…</div>;
-  if (!user)
-    return (
-      <div className="login">
-        <div className="box">
-          <h2>TCVGH Agent Platform</h2>
-          <p className="hint">使用院內 Google Workspace 帳號登入</p>
-          <button className="primary" onClick={() => signInWithGoogle().catch((e) => setErr(String(e)))}>
-            使用 Google 登入
-          </button>
-          {err && <p className="error">{err}</p>}
-        </div>
-      </div>
-    );
+  if (user === undefined) return <div className="grid h-full place-items-center"><Spinner /></div>;
+  if (!user || (MOCK && window.location.search.includes("login"))) return <Login />;
 
   return (
-    <>
-      <div className="topbar">
-        <span className="title" style={{ cursor: "pointer" }} onClick={() => setAgentId(null)}>
-          TCVGH Agent Platform
-        </span>
-        {agentId && <span className="badge">builder</span>}
-        <span className="spacer" />
-        <span className="hint">{user.email}</span>
-        <button onClick={() => signOut()}>登出</button>
-      </div>
-      {agentId ? <AgentBuilder agentId={agentId} onBack={() => setAgentId(null)} /> : <AgentList onOpen={setAgentId} />}
-    </>
+    <BrowserRouter>
+      <Routes>
+        <Route element={<Shell user={user} role={role} />}>
+          <Route index element={<Navigate to="/hub" replace />} />
+          <Route path="/hub" element={<Hub user={user} />} />
+          <Route path="/studio" element={<Studio />} />
+          <Route path="/studio/:id" element={<Studio />} />
+          <Route path="/sandbox" element={<Sandbox />} />
+          <Route path="/sandbox/:id" element={<Sandbox />} />
+          <Route path="/connectors" element={<Connectors />} />
+          <Route path="/connectors/new" element={<ConnectorSetup />} />
+          <Route path="/connectors/:id" element={<ConnectorSetup />} />
+          <Route path="/knowledge" element={<Knowledge />} />
+          <Route path="/audit" element={<Audit role={role} />} />
+          <Route path="*" element={<Navigate to="/hub" replace />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
   );
 }
