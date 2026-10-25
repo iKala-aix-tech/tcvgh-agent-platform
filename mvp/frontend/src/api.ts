@@ -1,6 +1,6 @@
 import { idToken } from "./firebase";
 import { MOCK, mockApi } from "./mock";
-import type { ActionSpec, AgentIn, AgentOut, AgentUsageRow, AuditEntry, ConnectorIn, ConnectorOut, ConnectorStats, ConnectorTypes, Flow, HubStats, KnowledgeFile, Me, MonitoringQuery, MonitoringSummary, RunResponse, TestResult, UsageSort } from "./types";
+import type { ActionSpec, AgentIn, AgentOut, AgentUsageRow, AuditPage, AuditQuery, AuditSummary, ConnectorIn, ConnectorOut, ConnectorStats, ConnectorTypes, Flow, HubStats, KnowledgeFile, Me, MonitoringQuery, MonitoringSummary, RunResponse, TestResult, UsageSort } from "./types";
 
 async function call<T>(path: string, init: RequestInit = {}, json = true): Promise<T> {
   const token = await idToken();
@@ -16,6 +16,16 @@ async function call<T>(path: string, init: RequestInit = {}, json = true): Promi
 }
 
 const qs = (q: MonitoringQuery) => new URLSearchParams({ from: q.from, to: q.to, department: q.department }).toString();
+
+/** Only non-empty filters go on the wire. */
+const auditQs = (q: AuditQuery, extra: Record<string, string> = {}) =>
+  new URLSearchParams(Object.entries({ ...q, ...extra }).filter(([, v]) => v !== "")).toString();
+/** CSV downloads need the bearer token, so they are fetched as a Blob and saved client-side. */
+const blob = async (path: string) => {
+  const res = await fetch(path, { headers: { Authorization: `Bearer ${await idToken()}` } });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.blob();
+};
 
 const realApi = {
   me: () => call<Me>("/api/me"),
@@ -40,7 +50,9 @@ const realApi = {
     return call<KnowledgeFile>(`/api/agents/${agentId}/knowledge`, { method: "POST", body: fd }, false);
   },
   deleteKnowledge: (agentId: string, fileId: string) => call<void>(`/api/agents/${agentId}/knowledge/${fileId}`, { method: "DELETE" }),
-  audit: (limit = 100) => call<AuditEntry[]>(`/api/audit?limit=${limit}`),
+  audit: (q: AuditQuery, cursor?: string | null, limit = 25) => call<AuditPage>(`/api/audit?${auditQs(q, { limit: String(limit), cursor: cursor ?? "" })}`),
+  auditSummary: () => call<AuditSummary>("/api/audit/summary"),
+  auditCsv: (q: AuditQuery) => blob(`/api/audit/export.csv?${auditQs(q)}`),
   connectorTypes: () => call<ConnectorTypes>("/api/connectors/types"),
   connectorStats: () => call<ConnectorStats>("/api/connectors/stats"),
   listConnectors: () => call<ConnectorOut[]>("/api/connectors"),
@@ -52,12 +64,7 @@ const realApi = {
   deleteConnector: (id: string) => call<void>(`/api/connectors/${id}`, { method: "DELETE" }),
   monitoringSummary: (q: MonitoringQuery) => call<MonitoringSummary>(`/api/monitoring/summary?${qs(q)}`),
   monitoringAgents: (q: MonitoringQuery, sort: UsageSort) => call<AgentUsageRow[]>(`/api/monitoring/agents?${qs(q)}&sort=${sort}`),
-  /** CSV needs the bearer token, so it is fetched as a Blob and saved client-side. */
-  monitoringCsv: async (q: MonitoringQuery) => {
-    const res = await fetch(`/api/monitoring/export.csv?${qs(q)}`, { headers: { Authorization: `Bearer ${await idToken()}` } });
-    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-    return res.blob();
-  },
+  monitoringCsv: (q: MonitoringQuery) => blob(`/api/monitoring/export.csv?${qs(q)}`),
 };
 
 export const api: typeof realApi = MOCK ? (mockApi as typeof realApi) : realApi;

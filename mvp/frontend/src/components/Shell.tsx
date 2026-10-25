@@ -14,7 +14,7 @@ const NAV = [
   { to: "/monitoring", icon: "monitoring", label: "Agent 監控與成本", admin: true },
   { group: "治理與臨床指引" },
   { to: "/knowledge", icon: "menu_book", label: "院內指引與醫學知識庫" },
-  { to: "/audit", icon: "shield", label: "資安審計與推論軌跡" },
+  { to: "/audit", icon: "shield", label: "資安審計與推論軌跡", admin: true },
 ];
 
 export default function Shell({ user, role }: { user: User; role: string }) {

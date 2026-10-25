@@ -7,7 +7,7 @@ import { CATEGORY_ICON, Empty, ErrorBox, Icon, Spinner, StatusPill, fmtTime } fr
 
 type Filter = "all" | "mine" | "clinical" | "admin" | "consultation" | "published";
 
-export default function Hub({ user }: { user: User }) {
+export default function Hub({ user, role }: { user: User; role: string }) {
   const nav = useNavigate();
   const [agents, setAgents] = useState<AgentOut[] | null>(null);
   const [stats, setStats] = useState<HubStats | null>(null);
@@ -147,7 +147,7 @@ export default function Hub({ user }: { user: User }) {
         <span className="grid h-12 w-12 place-items-center rounded-lg bg-primary-dark text-white"><Icon name="verified_user" fill /></span>
         <div className="flex-1"><p className="text-lg font-bold">臨床 AI 代理人安全治理承諾</p>
           <p className="text-sm text-on-surface-variant">所有在工作台訓練與發布之代理人，皆受中榮倫理委員會 (IRB) 指引規範與 GCP Vertex AI 隱私邊界隔離保護；病患資料於推論前先行去識別化。</p></div>
-        <button className="btn-secondary bg-white" onClick={() => nav("/audit")}><Icon name="receipt_long" className="text-[18px]" />稽核軌跡報告</button>
+        {role === "admin" && <button className="btn-secondary bg-white" onClick={() => nav("/audit")}><Icon name="receipt_long" className="text-[18px]" />稽核軌跡報告</button>}
       </section>
     </div>
   );

@@ -31,7 +31,7 @@ export default function App() {
       <Routes>
         <Route element={<Shell user={user} role={role ?? "builder"} />}>
           <Route index element={<Navigate to="/hub" replace />} />
-          <Route path="/hub" element={<Hub user={user} />} />
+          <Route path="/hub" element={<Hub user={user} role={role ?? "builder"} />} />
           <Route path="/studio" element={<Studio />} />
           <Route path="/studio/:id" element={<Studio />} />
           <Route path="/sandbox" element={<Sandbox />} />
@@ -40,7 +40,7 @@ export default function App() {
           <Route path="/connectors/new" element={<ConnectorSetup />} />
           <Route path="/connectors/:id" element={<ConnectorSetup />} />
           <Route path="/knowledge" element={<Knowledge />} />
-          <Route path="/audit" element={<Audit role={role ?? "builder"} />} />
+          <Route path="/audit" element={role === null ? <div className="grid h-full place-items-center"><Spinner /></div> : role === "admin" ? <Audit /> : <Navigate to="/hub" replace />} />
           <Route path="/monitoring" element={role === null ? <div className="grid h-full place-items-center"><Spinner /></div> : role === "admin" ? <Monitoring /> : <Navigate to="/hub" replace />} />
           <Route path="*" element={<Navigate to="/hub" replace />} />
         </Route>

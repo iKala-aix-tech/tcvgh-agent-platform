@@ -1,6 +1,6 @@
 /** In-memory API used when VITE_MOCK_API=1 (design review / demos without GCP). Same surface as ./api. */
 import { auth } from "./firebase";
-import { emptyAgent, type ActionSpec, type AgentIn, type AgentOut, type AgentUsageRow, type AuditEntry, type ConnectorIn, type ConnectorOut, type ConnectorStats, type ConnectorTypes, type Flow, type HubStats, type KnowledgeFile, type Me, type MonitoringQuery, type MonitoringSummary, type RunResponse, type TestResult, type UsageSort } from "./types";
+import { emptyAgent, type ActionSpec, type AgentIn, type AgentOut, type AgentUsageRow, type AuditCategory, type AuditEntry, type AuditPage, type AuditQuery, type AuditSeverity, type AuditSummary, type ConnectorIn, type ConnectorOut, type ConnectorStats, type ConnectorTypes, type Flow, type HubStats, type KnowledgeFile, type Me, type MonitoringQuery, type MonitoringSummary, type RunResponse, type TestResult, type UsageSort } from "./types";
 import connectorTypes from "./connectorTypes.json";
 
 export const MOCK = import.meta.env.VITE_MOCK_API === "1";
@@ -28,11 +28,97 @@ let files: KnowledgeFile[] = [
   { id: "k2", agent_id: "ag-cardio-094", agent_name: agents[0].name, name: "心臟學會臨床指引 2024.pdf", content_type: "application/pdf", size_bytes: 8.4e6, gcs_uri: "gs://x/k2", status: "indexed", error: "", uploaded_by: mockUser.email, created_at: ago(40) },
   { id: "k3", agent_id: "ag-er-023", agent_name: agents[2].name, name: "TTAS 檢傷標準手冊.pdf", content_type: "application/pdf", size_bytes: 2.1e6, gcs_uri: "gs://x/k3", status: "indexed", error: "", uploaded_by: "er@vghtc.gov.tw", created_at: ago(90) },
 ];
-const audit: AuditEntry[] = [
-  { id: "a1", actor: "u-lin", actor_email: mockUser.email, action: "agent.run", at: ago(0.2), details: { agent_id: "ag-cardio-094", latency_ms: 1180, models: ["gemini-3.1-pro-preview"] } },
-  { id: "a2", actor: "u-lin", actor_email: mockUser.email, action: "knowledge.upload", at: ago(30), details: { agent_id: "ag-cardio-094", file: "中榮病歷標準詞彙庫 v4.0.pdf", bytes: 4200000 } },
-  { id: "a3", actor: "u-lin", actor_email: mockUser.email, action: "agent.publish", at: ago(5), details: { agent_id: "ag-cardio-094", version: 3 } },
-];
+// ---- audit: deterministic synthetic trail over the last 7 days. Category / severity mirror backend/app/routers/audit.py.
+const AUDIT_CAT: Record<string, AuditCategory> = {
+  "agent.run": "inference", "agent.approve": "inference", "agent.reject": "inference", "connector.invoke": "connector", "connector.test": "connector",
+  "agent.create": "build", "agent.update": "build", "agent.publish": "build", "agent.unpublish": "build", "agent.delete": "build",
+  "knowledge.upload": "build", "knowledge.delete": "build", "knowledge.error": "build",
+  "connector.create": "access", "connector.update": "access", "connector.delete": "access", "monitoring.export": "access", "audit.export": "access",
+};
+const auditSeverity = (action: string, d: Record<string, unknown>): AuditSeverity =>
+  d.ok === false || action === "knowledge.error" || action === "agent.reject" ? "warning" : d.ok === true || action === "agent.publish" || action === "agent.approve" ? "success" : "info";
+const AGENT_META: Record<string, [string, string]> = {
+  "ag-cardio-094": ["心臟內科出院病歷智慧整理 Agent", "心臟血管中心"], "ag-nur-104": ["門診衛教即時問答助手", "護理部"],
+  "ag-er-023": ["急診檢傷流病快速比對 Agent", "急診醫學部"], "ag-rad-302": ["放射科影像報告結構化工具", "放射線部"],
+};
+const CONN_LABEL: Record<string, string> = { "cn-cardio-mcp": "Cardio-Guidelines Remote MCP Node", "cn-slack-er": "Slack 跨科急診警報 Bot (醫療專用)", "cn-his": "TCVGH HIS 核心系統雙向 Webhook", "cn-teams-nur": "Microsoft Teams 護理站通知" };
+const auditEntry = (id: string, actor: string, actor_email: string, action: string, at: string, details: Record<string, unknown>): AuditEntry => {
+  const agentId = String(details.agent_id ?? ""), connId = String(details.connector_id ?? "");
+  const agent_label = agentId ? AGENT_META[agentId]?.[0] ?? String(details.name ?? agentId) : "";
+  const [target_kind, target_id, target_label] = action.startsWith("connector.") && connId ? ["connector", connId, CONN_LABEL[connId] ?? connId] as const
+    : agentId ? ["agent", agentId, agent_label] as const
+    : action.endsWith(".export") ? ["system", "", action === "audit.export" ? "稽核報表" : "監控成本報表"] as const : ["", "", ""] as const;
+  return { id, actor, actor_email, action, at, category: AUDIT_CAT[action] ?? "other", severity: auditSeverity(action, details),
+    target_kind, target_id, target_label, agent_label, department: AGENT_META[agentId]?.[1] ?? "", details };
+};
+const STAFF: [string, string][] = [["u-lin", mockUser.email], ["u-nur", "nurse@vghtc.gov.tw"], ["u-er", "er@vghtc.gov.tw"], ["u-rad", "rad@vghtc.gov.tw"], ["u-it", "it-admin@vghtc.gov.tw"]];
+const STAFF_AGENT: Record<string, string> = { "u-lin": "ag-cardio-094", "u-nur": "ag-nur-104", "u-er": "ag-er-023", "u-rad": "ag-rad-302", "u-it": "ag-cardio-094" };
+const auditLog: AuditEntry[] = (() => {
+  let seed = 20261025;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  const pick = <T,>(xs: T[]) => xs[Math.floor(rnd() * xs.length)];
+  const out: AuditEntry[] = [];
+  let h = 0.05;
+  for (let i = 0; i < 160 && h < 7 * 24; i++, h += 0.15 + rnd() * 1.6) {
+    const [uid, email] = pick(STAFF), ag = STAFF_AGENT[uid], r = rnd();
+    const [action, d]: [string, Record<string, unknown>] =
+      r < 0.42 ? ["agent.run", { agent_id: ag, session_id: `s-${i}`, latency_ms: 600 + Math.floor(rnd() * 2400), models: [pick(["gemini-3-flash-preview", "gemini-3.1-pro-preview"])] }]
+      : r < 0.62 ? (() => { const ok = rnd() > 0.12; const cn = pick(["cn-cardio-mcp", "cn-cardio-mcp", "cn-slack-er", "cn-teams-nur"]);
+          return ["connector.invoke", { agent_id: ag, connector_id: cn, type: cn === "cn-cardio-mcp" ? "mcp" : cn === "cn-slack-er" ? "slack" : "teams",
+            connector_action: cn === "cn-cardio-mcp" ? pick(["search_guideline", "drug_dose"]) : "send_message", ok, error: ok ? "" : pick(["timeout after 15s", "401 token expired"]),
+            ...(cn === "cn-cardio-mcp" ? { args: { query: "STEMI PCI 後 DAPT 療程" } } : {}) }] as [string, Record<string, unknown>]; })()
+      : r < 0.68 ? ["agent.approve", { agent_id: ag, session_id: `s-${i}`, node_id: "approval-1" }]
+      : r < 0.71 ? ["agent.reject", { agent_id: ag, session_id: `s-${i}`, node_id: "approval-1" }]
+      : r < 0.79 ? ["agent.update", { agent_id: ag }]
+      : r < 0.83 ? ["agent.publish", { agent_id: ag, version: 1 + Math.floor(rnd() * 4) }]
+      : r < 0.88 ? ["knowledge.upload", { agent_id: ag, file: pick(["中榮病歷標準詞彙庫 v4.0.pdf", "AHA/ACC 2023 ACS Guideline.pdf", "門診衛教手冊 2026.docx"]), bytes: 200000 + Math.floor(rnd() * 4e6) }]
+      : r < 0.9 ? ["knowledge.error", { agent_id: ag, file: "掃描版護理紀錄.pdf", error: "RAG import failed: unsupported scanned PDF" }]
+      : r < 0.94 ? (rnd() > 0.4 ? ["connector.test", { connector_id: "cn-cardio-mcp", ok: true, message: "MCP 握手成功：cardio-guidelines · 14 個工具" }]
+        : ["connector.test", { connector_id: "cn-his", ok: false, message: "HIS / FHIR 閘道尚未串接" }]) as [string, Record<string, unknown>]
+      : r < 0.97 ? ["connector.update", { connector_id: pick(["cn-slack-er", "cn-teams-nur"]), credentials_changed: rnd() > 0.5 }]
+      : ["monitoring.export", { range_from: "2026-10-01", range_to: "2026-10-25", department: "", rows: 12 }];
+    out.push(auditEntry(`evt-${String(1000 - i).padStart(4, "0")}`, uid, email, action, ago(h), d));
+  }
+  return out;
+})();
+const localDay = (iso?: string | null) => (iso ? ymdLocal(new Date(iso)) : "");
+const ymdLocal = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const auditFilter = (q: AuditQuery) => {
+  const needle = q.q.trim().toLowerCase();
+  return auditLog.filter((e) => {
+    const day = localDay(e.at);
+    if (day < q.from || day > q.to) return false;
+    if (q.category === "alerts" ? e.severity !== "warning" : q.category && e.category !== q.category) return false;
+    if ((q.severity && e.severity !== q.severity) || (q.department && e.department !== q.department)) return false;
+    return !needle || [e.id, e.actor_email, e.action, e.target_id, e.target_label, e.agent_label, e.department, JSON.stringify(e.details)].join(" ").toLowerCase().includes(needle);
+  });
+};
+const auditPage = (q: AuditQuery, cursor?: string | null, limit = 25): AuditPage => {
+  const rows = auditFilter(q);
+  const start = cursor ? rows.findIndex((e) => e.id === cursor) + 1 : 0;
+  const items = rows.slice(start, start + limit);
+  return { items, next_cursor: start + limit < rows.length ? items[items.length - 1].id : null, scanned: rows.length, truncated: false };
+};
+const auditSummary = (): AuditSummary => {
+  const today = ymdLocal(new Date()), yesterday = ymdLocal(new Date(Date.now() - 864e5));
+  const rows = auditLog.filter((e) => localDay(e.at) === today);
+  const prev = auditLog.filter((e) => localDay(e.at) === yesterday).length;
+  const count = (xs: string[]) => Object.entries(xs.reduce<Record<string, number>>((m, k) => ({ ...m, [k]: (m[k] ?? 0) + 1 }), {})).sort((a, b) => b[1] - a[1]);
+  const inv = rows.filter((e) => e.action === "connector.invoke");
+  const warn = rows.filter((e) => e.severity === "warning");
+  const by_category: AuditSummary["by_category"] = {};
+  rows.forEach((e) => { by_category[e.category] = (by_category[e.category] ?? 0) + 1; });
+  const distinct = (xs: AuditEntry[], f: (e: AuditEntry) => string) => new Set(xs.map(f)).size;
+  return {
+    day: today, total: rows.length, total_yesterday: prev, delta_pct: prev ? Math.round(((rows.length - prev) / prev) * 1000) / 10 : null, by_category,
+    connector_calls: inv.length, connector_failed: inv.filter((e) => e.details.ok === false).length,
+    top_connectors: count(inv.map((e) => e.target_id)).slice(0, 3).map(([key, n]) => ({ key, label: CONN_LABEL[key] ?? key, count: n })),
+    warnings: warn.length, warning_breakdown: count(warn.map((e) => e.action)).map(([key, n]) => ({ key, label: "", count: n })),
+    active_users: distinct(rows, (e) => e.actor), run_users: distinct(rows.filter((e) => e.action === "agent.run"), (e) => e.actor),
+    build_users: distinct(rows.filter((e) => e.category === "build" || ["connector.create", "connector.update", "connector.delete"].includes(e.action)), (e) => e.actor),
+    agents_invoked: distinct(rows.filter((e) => e.action === "agent.run"), (e) => e.target_id), capped: false,
+  };
+};
 const TYPES = connectorTypes as unknown as ConnectorTypes;
 const conn = (id: string, p: Partial<ConnectorOut>): ConnectorOut => ({
   id, type: "mcp", label: "", scope: "", config: {}, secret_fields: [], redact_pii: true, audit_payloads: true, owner_uid: "u-lin", owner_email: mockUser.email,
@@ -133,7 +219,9 @@ export const mockApi = {
   library: () => delay(files),
   uploadKnowledge: (agentId: string, file: File) => { const f: KnowledgeFile = { id: `k${Date.now()}`, agent_id: agentId, agent_name: find(agentId).name, name: file.name, content_type: file.type, size_bytes: file.size, gcs_uri: "gs://x", status: "indexed", error: "", uploaded_by: mockUser.email, created_at: new Date().toISOString() }; files = [f, ...files]; return delay(f, 1200); },
   deleteKnowledge: (_a: string, fileId: string) => { files = files.filter((f) => f.id !== fileId); return delay(undefined); },
-  audit: () => delay(audit),
+  audit: (q: AuditQuery, cursor?: string | null, limit = 25) => delay(auditPage(q, cursor, limit), 250),
+  auditSummary: () => delay(auditSummary(), 250),
+  auditCsv: (q: AuditQuery) => delay(new Blob([`\ufeffat,event_id,actor_email,action,category,severity,target_label,department\n${auditFilter(q).map((e) => [e.at, e.id, e.actor_email, e.action, e.category, e.severity, `"${e.target_label}"`, e.department].join(",")).join("\n")}`], { type: "text/csv" })),
   connectorTypes: () => delay(TYPES),
   connectorStats: () => delay<ConnectorStats>({ connected: connectors.filter((c) => c.status === "active").length, available_types: TYPES.types.filter((t) => t.available).length, invocations_today: 14820, mcp_nodes: 1 }),
   listConnectors: () => delay(connectors),

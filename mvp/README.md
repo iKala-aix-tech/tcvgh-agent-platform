@@ -123,7 +123,9 @@ non-owners can run the published snapshot but not edit. Publish refuses an inval
   RAG), React Flow canvas with the design's node palette (HIS/EMR, knowledge, LLM, PII mask, condition,
   structured output, connector, approval, output), flow validation banner, cost / latency estimate.
 - `/sandbox/:id` Playground with preset test cases, citations, trace, and the **publish to Hub** action.
-- `/knowledge` library of every file on agents you can see; `/audit` the Firestore audit collection.
+- `/knowledge` library of every file on agents you can see.
+- `/audit` (admin-only, `routers/audit.py`): the Firestore audit collection with today's KPI tiles, category /
+  severity / department / search filters, cursor pagination and CSV export (the export is itself audited).
 - `VITE_MOCK_API=1` runs the whole UI on in-memory data with no sign-in (design review / demos).
   Add `?login` to preview the login page in that mode.
 

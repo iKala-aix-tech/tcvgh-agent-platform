@@ -170,7 +170,46 @@ class AuditEntry(BaseModel):
     actor_email: str = ""
     action: str
     at: Any = None
+    # Derived at read time from action + details (nothing extra is stored on the audit doc).
+    category: str = "other"  # inference | connector | build | access | other
+    severity: str = "info"  # info | success | warning
+    target_kind: str = ""  # agent | connector | system | ""
+    target_id: str = ""
+    target_label: str = ""
+    agent_label: str = ""  # name of the agent involved (also set for connector calls made by an agent)
+    department: str = ""  # that agent's department, "" when unknown
     details: dict[str, Any] = Field(default_factory=dict)
+
+
+class AuditPage(BaseModel):
+    items: list[AuditEntry]
+    next_cursor: str | None = None  # pass back as ?cursor= for the next page
+    scanned: int = 0  # audit docs read to fill this page (filters run in the backend)
+    truncated: bool = False  # scan cap hit before the page filled; more matches may follow the cursor
+
+
+class AuditCount(BaseModel):
+    key: str
+    label: str = ""
+    count: int
+
+
+class AuditSummary(BaseModel):
+    day: str  # YYYY-MM-DD, Asia/Taipei
+    total: int
+    total_yesterday: int
+    delta_pct: float | None = None
+    by_category: dict[str, int] = Field(default_factory=dict)
+    connector_calls: int = 0
+    connector_failed: int = 0
+    top_connectors: list[AuditCount] = Field(default_factory=list)
+    warnings: int = 0
+    warning_breakdown: list[AuditCount] = Field(default_factory=list)
+    active_users: int = 0
+    run_users: int = 0  # distinct people who ran an agent today
+    build_users: int = 0  # distinct people who changed an agent, knowledge, or connector today
+    agents_invoked: int = 0
+    capped: bool = False  # today's scan hit the cap; counts are lower bounds
 
 
 class HubStats(BaseModel):

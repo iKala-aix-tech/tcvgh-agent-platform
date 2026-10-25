@@ -4,6 +4,7 @@ import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAx
 import { api } from "../api";
 import { DEPARTMENTS, type AgentUsageRow, type MonitoringQuery, type MonitoringSummary, type UsageSort } from "../types";
 import { Empty, ErrorBox, Icon, Spinner } from "../components/ui";
+import { Delta, Kpi, Row } from "../components/Kpi";
 
 type Range = "today" | "7d" | "month" | "custom";
 const RANGES: { id: Range; label: string }[] = [
@@ -29,11 +30,6 @@ export const fmtTokens = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)} B` 
 const fmtInt = (n: number) => n.toLocaleString("en-US");
 const fmtUsd = (n: number, digits = 2) => `$${n.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 const fmtDay = (iso: string) => { const d = new Date(`${iso}T00:00:00`); return `${d.getMonth() + 1}/${d.getDate()} ${["日", "一", "二", "三", "四", "五", "六"][d.getDay()]}`; };
-const Delta = ({ pct, invert = false }: { pct?: number | null; invert?: boolean }) => {
-  if (pct == null) return <span className="font-mono text-[11px] text-outline">無上期資料</span>;
-  const good = invert ? pct <= 0 : pct >= 0;
-  return <span className={`inline-flex items-center gap-0.5 font-mono text-[11px] font-semibold ${good ? "text-primary" : "text-error"}`}><Icon name={pct >= 0 ? "trending_up" : "trending_down"} className="text-[14px]" />{pct >= 0 ? "+" : ""}{pct}%</span>;
-};
 
 export default function Monitoring() {
   const nav = useNavigate();
@@ -228,22 +224,6 @@ export default function Monitoring() {
   );
 }
 
-function Kpi({ label, title, icon, value, unit, foot, children }: { label: string; title: string; icon: string; value: string; unit: string; foot: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <div className="card flex flex-col px-5 py-4">
-      <div className="flex items-start justify-between">
-        <div><p className="font-mono text-[10px] uppercase tracking-wider text-outline">{label}</p><p className="mt-0.5 text-base font-semibold">{title}</p></div>
-        <span className="grid h-10 w-10 place-items-center rounded-lg bg-primary-tint text-primary"><Icon name={icon} /></span>
-      </div>
-      <p className="mt-3 text-3xl font-bold text-primary-dark">{value} <span className="text-sm font-medium text-on-surface-variant">{unit}</span></p>
-      <p className="mt-1 text-xs">{foot}</p>
-      <div className="mt-3 rounded-lg bg-surface-container-low p-3 text-xs">{children}</div>
-    </div>
-  );
-}
-const Row = ({ k, v, tone }: { k: string; v: string; tone?: "warning" }) => (
-  <div className="flex items-center justify-between gap-2 py-0.5"><span className="text-on-surface-variant">{k}</span><span className={`font-mono text-[11px] font-semibold ${tone === "warning" ? "text-warning" : "text-on-surface"}`}>{v}</span></div>
-);
 const Th = ({ children, right = false }: { children: React.ReactNode; right?: boolean }) => <th className={`px-4 py-2 ${right ? "text-right" : "text-left"}`}>{children}</th>;
 
 function ChartTip({ active, payload, label }: { active?: boolean; payload?: { name: string; value: number; color: string; payload: { cost: number; requests: number } }[]; label?: string }) {

@@ -130,13 +130,34 @@ export interface RunResponse {
   latency_ms: number;
 }
 
+export type AuditCategory = "inference" | "connector" | "build" | "access" | "other";
+export type AuditSeverity = "info" | "success" | "warning";
+/** Category, severity, target and department are derived by the backend at read time (backend/app/routers/audit.py). */
 export interface AuditEntry {
   id: string;
   actor: string;
   actor_email: string;
   action: string;
   at?: string | null;
+  category: AuditCategory;
+  severity: AuditSeverity;
+  target_kind: "agent" | "connector" | "system" | "";
+  target_id: string;
+  target_label: string;
+  agent_label: string;
+  department: string;
   details: Record<string, unknown>;
+}
+export interface AuditPage { items: AuditEntry[]; next_cursor: string | null; scanned: number; truncated: boolean }
+/** `category` is an AuditCategory, "alerts" (all warnings) or "" (all). Dates are YYYY-MM-DD, Asia/Taipei. */
+export interface AuditQuery { from: string; to: string; category: string; severity: string; department: string; q: string }
+export interface AuditCount { key: string; label: string; count: number }
+export interface AuditSummary {
+  day: string; total: number; total_yesterday: number; delta_pct: number | null;
+  by_category: Partial<Record<AuditCategory, number>>;
+  connector_calls: number; connector_failed: number; top_connectors: AuditCount[];
+  warnings: number; warning_breakdown: AuditCount[];
+  active_users: number; run_users: number; build_users: number; agents_invoked: number; capped: boolean;
 }
 
 export interface HubStats {
