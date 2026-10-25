@@ -53,7 +53,9 @@ TYPES: dict[str, dict] = {
         "icon": "webhook", "badge": "REST", "available": True,
         "description": "將 Agent 推論結果以 JSON 推送到任意 HTTP 端點，或呼叫院內 REST API。",
         "fields": [
-            _f("url", "Endpoint URL", "url", required=True, placeholder="https://api.vghtc.internal/notify"),
+            # Secret, not config: signed URLs (Power Automate `sig=`, Slack/Teams hooks) are credentials in themselves.
+            _f("url", "Endpoint URL", "secret", required=True, placeholder="https://api.vghtc.internal/notify", section="credentials",
+               hint="存於 Secret Manager，不會顯示於連接器清單。含簽章的網址（如 Power Automate 的 sig=）視同密碼。"),
             _f("method", "HTTP Method", "select", default="POST",
                options=[{"value": "POST", "label": "POST"}, {"value": "PUT", "label": "PUT"}, {"value": "GET", "label": "GET"}]),
             _f("headers", "額外 Headers（JSON）", "textarea", placeholder='{"X-Source": "tcvgh-agent"}'),
@@ -227,6 +229,14 @@ def _webhook_headers(config: dict, secrets: dict) -> dict:
     return h
 
 
+def _webhook_url(config: dict, secrets: dict) -> str:
+    """Secret Manager first; `config.url` only for connectors saved before the URL became a secret."""
+    url = secrets.get("url") or config.get("url")
+    if not url:
+        raise RuntimeError("webhook: endpoint URL is not set")
+    return url
+
+
 def _slack_post(config: dict, secrets: dict, text: str, channel: str = "") -> str:
     if secrets.get("bot_token"):
         r = httpx.post("https://slack.com/api/chat.postMessage", timeout=TIMEOUT,
@@ -284,7 +294,7 @@ def test(type_: str, config: dict, secrets: dict) -> dict:
             msg = f"MCP 握手成功：{srv} · {len(tools)} 個工具"
         elif type_ == "webhook":
             method = config.get("method", "POST")
-            r = httpx.request(method, config["url"], headers=_webhook_headers(config, secrets), timeout=TIMEOUT,
+            r = httpx.request(method, _webhook_url(config, secrets), headers=_webhook_headers(config, secrets), timeout=TIMEOUT,
                               json={"ping": True, "source": "tcvgh-agent-platform"} if method != "GET" else None)
             msg = f"{method} {r.status_code}"
             if r.status_code >= 400:
@@ -335,7 +345,7 @@ def invoke(type_: str, config: dict, secrets: dict, action: str, args: dict, *, 
         except json.JSONDecodeError:
             body = {"text": payload}
         method = config.get("method", "POST")
-        r = httpx.request(method, config["url"], headers=_webhook_headers(config, secrets), timeout=TIMEOUT,
+        r = httpx.request(method, _webhook_url(config, secrets), headers=_webhook_headers(config, secrets), timeout=TIMEOUT,
                           json=body if method != "GET" else None, params=body if method == "GET" else None)
         r.raise_for_status()
         return r.text[:4000] or f"{method} {r.status_code}"

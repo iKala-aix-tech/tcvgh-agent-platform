@@ -23,11 +23,25 @@ def _usage() -> dict[str, int]:
     return counts
 
 
+def _legacy_secrets(type_: str, config: dict) -> dict[str, str]:
+    """Secret-kind values still sitting in plain config (saved before that field became a secret)."""
+    return {k: v for k in eng.secret_fields(type_) if isinstance(v := config.get(k), str) and v}
+
+
+def _public(type_: str, config: dict) -> dict:
+    """Config with every secret-kind key removed, so credentials never reach Firestore config or API output."""
+    hidden = set(eng.secret_fields(type_))
+    return {k: v for k, v in config.items() if k not in hidden}
+
+
 def _out(doc, usage: dict[str, int] | None = None) -> ConnectorOut:
     d = doc.to_dict() or {}
-    return ConnectorOut(id=doc.id, secret_fields=sorted((d.get("secrets") or {}).keys()),
-                        agents_count=(usage or {}).get(doc.id, 0),
-                        **{k: v for k, v in d.items() if k != "secrets"})
+    type_, config = d.get("type", ""), d.get("config") or {}
+    known = type_ in eng.TYPES
+    stored = set((d.get("secrets") or {}).keys()) | (set(_legacy_secrets(type_, config)) if known else set())
+    return ConnectorOut(id=doc.id, secret_fields=sorted(stored), agents_count=(usage or {}).get(doc.id, 0),
+                        **{k: v for k, v in d.items() if k not in {"secrets", "config"}},
+                        config=_public(type_, config) if known else config)
 
 
 def _load(connector_id: str):
@@ -77,8 +91,10 @@ def create_connector(body: ConnectorIn, user: User = Depends(current_user)):
     _check_type(body.type)
     ref = db.client().collection("connectors").document()
     allowed = set(eng.secret_fields(body.type))
-    stored = {k: sm.put(ref.id, k, v) for k, v in body.secrets.items() if k in allowed and v}
-    data = {"type": body.type, "label": body.label, "scope": body.scope, "config": body.config, "secrets": stored,
+    # A secret sent in config by an older client is still stored as a secret, never as config.
+    incoming = {**_legacy_secrets(body.type, body.config), **{k: v for k, v in body.secrets.items() if v}}
+    stored = {k: sm.put(ref.id, k, v) for k, v in incoming.items() if k in allowed}
+    data = {"type": body.type, "label": body.label, "scope": body.scope, "config": _public(body.type, body.config), "secrets": stored,
             "redact_pii": body.redact_pii, "audit_payloads": body.audit_payloads, "owner_uid": user.uid,
             "owner_email": user.email, "status": "unverified", "last_test": None, "created_at": db.now(), "updated_at": db.now()}
     ref.set(data)
@@ -100,11 +116,16 @@ def update_connector(connector_id: str, body: ConnectorIn, user: User = Depends(
         raise HTTPException(422, "connector type cannot be changed; create a new connector")
     stored = dict(cur.get("secrets") or {})
     allowed = set(eng.secret_fields(body.type))
-    for k, v in body.secrets.items():
-        if k in allowed and v:  # empty string == keep existing
+    cur_config = cur.get("config") or {}
+    # Legacy plain-config secrets move into Secret Manager on the first save, even if the form left them blank.
+    incoming = {**{k: v for k, v in _legacy_secrets(body.type, cur_config).items() if k not in stored},
+                **_legacy_secrets(body.type, body.config), **{k: v for k, v in body.secrets.items() if v}}
+    for k, v in incoming.items():
+        if k in allowed:  # absent / empty == keep existing
             stored[k] = sm.put(connector_id, k, v)
-    changed_creds = any(v for v in body.secrets.values()) or body.config != cur.get("config")
-    snap.reference.update({"label": body.label, "scope": body.scope, "config": body.config, "secrets": stored,
+    config = _public(body.type, body.config)
+    changed_creds = any(v for v in body.secrets.values()) or config != _public(body.type, cur_config)
+    snap.reference.update({"label": body.label, "scope": body.scope, "config": config, "secrets": stored,
                            "redact_pii": body.redact_pii, "audit_payloads": body.audit_payloads, "updated_at": db.now(),
                            **({"status": "unverified"} if changed_creds else {})})
     db.audit(user.uid, "connector.update", user.email, connector_id=connector_id, credentials_changed=bool(body.secrets))

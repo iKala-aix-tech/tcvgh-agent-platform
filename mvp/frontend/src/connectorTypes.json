@@ -105,13 +105,13 @@
     {
      "key": "url",
      "label": "Endpoint URL",
-     "kind": "url",
+     "kind": "secret",
      "required": true,
-     "hint": "",
+     "hint": "存於 Secret Manager，不會顯示於連接器清單。含簽章的網址（如 Power Automate 的 sig=）視同密碼。",
      "placeholder": "https://api.vghtc.internal/notify",
      "options": [],
      "default": null,
-     "section": "server"
+     "section": "credentials"
     },
     {
      "key": "method",
