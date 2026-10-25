@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 
 from ..config import settings
 from ..schemas import AgentIn, Citation, Flow, FlowNode, StepTrace
-from . import deid, llm
+from . import deid, llm, usage
 
 MAX_STEPS = 40
 _VAR = re.compile(r"{{\s*([\w\-]+)\s*}}")
@@ -124,12 +124,28 @@ def invoke_connector(connector_id: str, action: str, args: dict, *, agent_id: st
     return result, f"{data.get('label', data.get('type'))} · {action} · {'成功' if ok else '失敗'}"
 
 
+def _complete(agent: AgentIn, agent_id: str, user_id: str, group: str, **kw) -> llm.Completion:
+    """LLM call + usage ledger. Failures are recorded (ok=false) and re-raised so the run still errors."""
+    try:
+        c = llm.complete(group=group, agent_id=agent_id, user_id=user_id, **kw)
+    except Exception:
+        usage.record(agent=agent, agent_id=agent_id, user_id=user_id, group=group, model=group, prompt_tokens=0,
+                     completion_tokens=0, cost_usd=0.0, ms=0, ok=False, fallback=False)
+        raise
+    usage.record(agent=agent, agent_id=agent_id, user_id=user_id, group=group, model=c.model,
+                 prompt_tokens=c.prompt_tokens, completion_tokens=c.completion_tokens, cost_usd=c.cost_usd, ms=c.ms,
+                 ok=True, fallback=llm.is_fallback(group, c.model))
+    return c
+
+
 def _grounding_block(chunks: list[dict]) -> str:
     return "\n\n".join(f"[{i + 1}] 來源：{c['source']}\n{c['text']}" for i, c in enumerate(chunks))
 
 
 def run_flow(agent: AgentIn, *, agent_id: str, user_id: str, user_message: str,
-             history: list[dict], rag_corpus: str | None = None) -> RunResult:
+             history: list[dict], rag_corpus: str | None = None, resume: dict | None = None) -> RunResult:
+    """Walk the flow. `resume` = the `pending` dict a previous run returned at an approval node
+    ({node_id, ctx, grounding}); execution continues from the edge after that node with the saved ctx."""
     flow = agent.flow if agent.flow.nodes else _default_flow()
     nodes = {n.id: n for n in flow.nodes}
     out_edges: dict[str, list] = {}
@@ -145,6 +161,18 @@ def run_flow(agent: AgentIn, *, agent_id: str, user_id: str, user_message: str,
     base_system = agent.instructions or f"You are {agent.name}. {agent.description}".strip()
     grounding: list[dict] = []  # chunks retrieved so far (appended to system prompt if unreferenced)
     s = settings()
+    if resume:
+        approved = nodes.get(str(resume.get("node_id")))
+        if approved is None:
+            raise ValueError("approval node no longer exists in this flow")
+        ctx = {**ctx, **{k: str(v) for k, v in (resume.get("ctx") or {}).items()}}
+        grounding = list(resume.get("grounding") or [])
+        res.trace.append(StepTrace(node_id=approved.id, type="approval", summary="已由 Agent 負責人核准，繼續執行"))
+        nxt = out_edges.get(approved.id, [])
+        start = nodes.get(nxt[0].target) if nxt else None
+        if start is None:  # approval was the last node: nothing left to do
+            res.reply = ctx["last"]
+            return res
 
     def tick() -> float:
         return time.perf_counter()
@@ -209,9 +237,10 @@ def run_flow(agent: AgentIn, *, agent_id: str, user_id: str, user_message: str,
                 schema = str(node.data.get("schema") or "{}")
                 system = f"{system}\n\n只輸出符合下列 JSON Schema 的 JSON 物件，不要加任何說明文字：\n{schema}"
             group = pick_group(agent, node, prompt)
-            reply, model = llm.complete(group=group, system=system, agent_id=agent_id, user_id=user_id,
-                                        messages=[*history, {"role": "user", "content": prompt}],
-                                        temperature=agent.temperature, top_p=agent.top_p, json_mode=structured)
+            c = _complete(agent, agent_id, user_id, group, system=system,
+                          messages=[*history, {"role": "user", "content": prompt}],
+                          temperature=agent.temperature, top_p=agent.top_p, json_mode=structured)
+            reply = c.text
             if structured:
                 try:
                     res.structured = json.loads(reply)
@@ -219,18 +248,18 @@ def run_flow(agent: AgentIn, *, agent_id: str, user_id: str, user_message: str,
                 except json.JSONDecodeError:
                     res.trace.append(StepTrace(node_id=node.id, type="structured_output", summary="模型輸出非合法 JSON，原文通過"))
             ctx[node.id] = ctx["last"] = reply
-            res.trace.append(StepTrace(node_id=node.id, type=node.type, model=model, group=group,
-                                       summary=f"{len(reply)} 字", ms=ms(t0)))
+            res.trace.append(StepTrace(node_id=node.id, type=node.type, model=c.model, group=group, summary=f"{len(reply)} 字",
+                                       ms=ms(t0), prompt_tokens=c.prompt_tokens, completion_tokens=c.completion_tokens,
+                                       cost_usd=c.cost_usd))
 
         elif node.type == "condition":
             question = _render(str(node.data.get("question") or "Is the request urgent?"), ctx)
-            verdict, model = llm.complete(
-                group="fast", system="Answer strictly YES or NO.", agent_id=agent_id, user_id=user_id,
-                messages=[{"role": "user", "content": f"{question}\n\nContext:\n{ctx['last']}"}], temperature=0,
-            )
-            nxt_handle = "true" if verdict.strip().upper().startswith("Y") else "false"
-            res.trace.append(StepTrace(node_id=node.id, type="condition", model=model, group="fast",
-                                       summary=f"{question} -> {nxt_handle}", ms=ms(t0)))
+            c = _complete(agent, agent_id, user_id, "fast", system="Answer strictly YES or NO.",
+                          messages=[{"role": "user", "content": f"{question}\n\nContext:\n{ctx['last']}"}], temperature=0)
+            nxt_handle = "true" if c.text.strip().upper().startswith("Y") else "false"
+            res.trace.append(StepTrace(node_id=node.id, type="condition", model=c.model, group="fast",
+                                       summary=f"{question} -> {nxt_handle}", ms=ms(t0), prompt_tokens=c.prompt_tokens,
+                                       completion_tokens=c.completion_tokens, cost_usd=c.cost_usd))
 
         elif node.type == "tool":
             cid, action = str(node.data.get("connector_id") or ""), str(node.data.get("action") or "")
@@ -250,8 +279,9 @@ def run_flow(agent: AgentIn, *, agent_id: str, user_id: str, user_message: str,
             ctx[node.id] = ctx["last"] = result
 
         elif node.type == "approval":
+            # ctx + grounding ride along so the router can persist them and resume after approval.
             res.pending = {"node_id": node.id, "message": _render(str(node.data.get("message") or "Approve this action?"), ctx),
-                           "preview": ctx["last"]}
+                           "preview": ctx["last"], "ctx": dict(ctx), "grounding": grounding}
             res.trace.append(StepTrace(node_id=node.id, type="approval", summary="等待人工核准"))
             res.reply = ctx["last"]
             return res

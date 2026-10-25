@@ -11,6 +11,7 @@ const NAV = [
   { to: "/studio", icon: "account_tree", label: "Agent Studio 工作流建置" },
   { to: "/connectors", icon: "cable", label: "Connectors 連接器" },
   { to: "/sandbox", icon: "rocket_launch", label: "沙盒測試與發布中心" },
+  { to: "/monitoring", icon: "monitoring", label: "Agent 監控與成本", admin: true },
   { group: "治理與臨床指引" },
   { to: "/knowledge", icon: "menu_book", label: "院內指引與醫學知識庫" },
   { to: "/audit", icon: "shield", label: "資安審計與推論軌跡" },
@@ -46,7 +47,7 @@ export default function Shell({ user, role }: { user: User; role: string }) {
       </header>
       <div className="flex min-h-0 flex-1">
         <aside className={`hidden shrink-0 flex-col border-r border-hairline bg-white pb-3 transition-[width] duration-200 md:flex ${collapsed ? "w-16 px-2" : "w-60 px-3"}`}>
-          {NAV.map((n, i) =>
+          {NAV.filter((n) => !("admin" in n && n.admin) || role === "admin").map((n, i) =>
             "group" in n ? (
               collapsed ? <div key={i} className="mx-auto my-3 h-px w-6 bg-hairline" /> : <div key={i} className="nav-group">{n.group}</div>
             ) : (

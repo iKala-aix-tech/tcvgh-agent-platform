@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
-import { CATEGORIES, MODEL_GROUPS, emptyAgent, toAgentIn, type AgentOut, type Flow, type FlowNode, type ModelGroup } from "../types";
+import { CATEGORIES, DEPARTMENTS, MODEL_GROUPS, emptyAgent, toAgentIn, type AgentOut, type Flow, type FlowNode, type ModelGroup } from "../types";
 import Canvas from "../components/Canvas";
 import NodeInspector from "../components/NodeInspector";
 import KnowledgePanel from "../components/KnowledgePanel";
@@ -113,7 +113,7 @@ export default function Studio() {
               <Field label="分類"><select value={agent.category} onChange={(e) => patch({ category: e.target.value as AgentOut["category"] })} disabled={!editable}>{CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}</select></Field>
               <Field label="專科代碼"><input value={agent.code} placeholder="CARD-801" onChange={(e) => patch({ code: e.target.value })} disabled={!editable} /></Field>
             </div>
-            <Field label="負責科別 / 單位"><input value={agent.department} placeholder="心臟內科 (CV)" onChange={(e) => patch({ department: e.target.value })} disabled={!editable} /></Field>
+            <Field label="負責科別 / 單位" hint="監控與成本儀表板依此分科統計"><select value={agent.department} onChange={(e) => patch({ department: e.target.value })} disabled={!editable}><option value="">（未指定）</option>{DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}</select></Field>
             <Field label="臨床業務說明 (Description)"><textarea rows={3} value={agent.description} onChange={(e) => patch({ description: e.target.value })} disabled={!editable} /></Field>
             <Field label="基底推論模型 (Vertex AI Node)" hint={MODEL_GROUPS.find((g) => g.id === agent.model_group)?.hint} right={<span className="chip"><Icon name="verified" className="text-[12px]" />經 LiteLLM 路由</span>}>
               <select value={agent.model_group} onChange={(e) => patch({ model_group: e.target.value as ModelGroup, routing: { ...agent.routing, default_group: e.target.value as ModelGroup } })} disabled={!editable}>

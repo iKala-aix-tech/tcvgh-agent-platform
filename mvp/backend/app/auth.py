@@ -22,7 +22,7 @@ class User:
     uid: str
     email: str
     name: str
-    role: str  # "builder" | "admin" (custom claim), default builder
+    role: str  # "builder" | "admin" (ADMIN_EMAILS env var or a custom claim), default builder
 
 
 def _bearer(request: Request) -> str:
@@ -48,12 +48,9 @@ def current_user(token: str = Depends(_bearer)) -> User:
     if allowed and domain not in allowed and (hd or "").lower() not in allowed:
         raise HTTPException(403, f"domain {domain} is not allowed on this platform")
 
-    return User(
-        uid=claims["uid"],
-        email=email,
-        name=claims.get("name") or email,
-        role=claims.get("role", "builder"),
-    )
+    # Admins are detected at sign-in: e-mail allow-list first (no claim-setting script needed), claim second.
+    role = "admin" if email in settings().admin_email_list else claims.get("role", "builder")
+    return User(uid=claims["uid"], email=email, name=claims.get("name") or email, role=role)
 
 
 def require_admin(user: User = Depends(current_user)) -> User:

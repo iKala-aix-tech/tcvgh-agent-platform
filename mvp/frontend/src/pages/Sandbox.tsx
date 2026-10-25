@@ -5,7 +5,7 @@ import type { AgentOut, Citation, RunResponse, StepTrace } from "../types";
 import { Empty, ErrorBox, Icon, Spinner, StatusPill, fmtTime } from "../components/ui";
 import { currentName, currentUid } from "../mock";
 
-interface Msg { role: "user" | "assistant"; content: string; at: Date; trace?: StepTrace[]; citations?: Citation[]; structured?: Record<string, unknown> | null; latency?: number; pending?: RunResponse["pending_approval"] }
+interface Msg { role: "user" | "assistant"; content: string; at: Date; trace?: StepTrace[]; citations?: Citation[]; structured?: Record<string, unknown> | null; latency?: number; pending?: RunResponse["pending_approval"]; decided?: "approved" | "rejected" }
 
 const SUGGESTIONS = ["請摘要重點並列出注意事項", "轉為台語繁體通俗長輩語意", "依院內指引列出引用來源"];
 
@@ -42,6 +42,17 @@ export default function Sandbox() {
       const r = await api.run(id, content, session, usePublished);
       setSession(r.session_id);
       setMsgs((m) => [...m, { role: "assistant", content: r.reply, at: new Date(), trace: r.trace, citations: r.citations, structured: r.structured, latency: r.latency_ms, pending: r.pending_approval }]);
+    } catch (e) { setErr(String(e)); } finally { setBusy(false); }
+  };
+
+  /** Owner decides on the step the last run paused at; approve continues the flow in this same session. */
+  const decide = async (idx: number, approve: boolean) => {
+    if (!id || !session || busy) return;
+    setBusy(true); setErr("");
+    try {
+      const r = await api.approve(id, session, approve);
+      setMsgs((m) => [...m.map((x, i) => (i === idx ? { ...x, decided: approve ? "approved" as const : "rejected" as const } : x)),
+        { role: "assistant", content: r.reply, at: new Date(), trace: r.trace, citations: r.citations, structured: r.structured, latency: r.latency_ms, pending: r.pending_approval }]);
     } catch (e) { setErr(String(e)); } finally { setBusy(false); }
   };
 
@@ -134,7 +145,19 @@ export default function Sandbox() {
                       <span className="flex-1" /><span className="font-mono text-[10px] text-outline">{m.latency ? `${(m.latency / 1000).toFixed(2)}s` : ""}</span></p>
                     <div className="card rounded-xl rounded-tl-sm px-4 py-3 text-sm leading-6">
                       {m.structured ? <pre className="overflow-auto rounded bg-surface-container-low p-3 font-mono text-xs">{JSON.stringify(m.structured, null, 2)}</pre> : <div className="whitespace-pre-wrap">{m.content}</div>}
-                      {m.pending && <div className="mt-3 flex items-center gap-2 rounded border border-warning/40 bg-warning-container/50 px-3 py-2 text-xs text-warning"><Icon name="pause_circle" className="text-[16px]" />等待人工核准：{m.pending.message}</div>}
+                      {m.pending && (
+                        <div className={`mt-3 rounded border px-3 py-2 text-xs ${m.decided === "approved" ? "border-primary/40 bg-primary-tint text-primary-dark" : m.decided === "rejected" ? "border-hairline bg-surface-container-low text-on-surface-variant" : "border-warning/40 bg-warning-container/50 text-warning"}`}>
+                          <p className="flex items-center gap-2"><Icon name={m.decided === "approved" ? "check_circle" : m.decided === "rejected" ? "cancel" : "pause_circle"} className="text-[16px]" />
+                            {m.decided === "approved" ? "已核准，流程已繼續" : m.decided === "rejected" ? "已拒絕，流程停止" : `等待人工核准：${m.pending.message}`}</p>
+                          {!m.decided && (editable ? (
+                            <div className="mt-2 flex items-center gap-2">
+                              <button className="btn-primary py-1" disabled={busy || i !== msgs.length - 1} onClick={() => decide(i, true)}><Icon name="check" className="text-[16px]" />核准並繼續</button>
+                              <button className="btn-soft py-1" disabled={busy || i !== msgs.length - 1} onClick={() => decide(i, false)}>拒絕</button>
+                              <span className="font-mono text-[10px] text-outline">核准人：Agent 負責人（您）</span>
+                            </div>
+                          ) : <p className="mt-1 text-on-surface-variant">需由 Agent 負責人 {agent.owner_email} 在其沙盒中核准後才會執行下一步。</p>)}
+                        </div>
+                      )}
                       {m.citations && m.citations.length > 0 && (
                         <div className="mt-3 border-t border-hairline pt-2 text-xs">
                           <p className="mb-1 text-on-surface-variant">引用指引來源：</p>

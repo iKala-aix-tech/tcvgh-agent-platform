@@ -42,6 +42,8 @@ ensure_index agents status=ascending updated_at=descending
 ensure_index audit actor=ascending at=descending
 ensure_index audit action=ascending at=ascending
 ensure_index audit actor=ascending action=ascending at=descending
+# Added 2026-10-25 (admin monitoring dashboard): usage_daily rollups filtered by department over a day range.
+ensure_index usage_daily department=ascending day=ascending
 
 # --- Upload bucket: uniform access, no public, versioning for audit --------------------
 if ! gcloud storage buckets describe "gs://$UPLOAD_BUCKET" >/dev/null 2>&1; then

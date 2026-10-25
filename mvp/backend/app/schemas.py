@@ -5,7 +5,7 @@ The canvas (React Flow) saves `nodes` and `edges`. Each node has a `type` from N
 """
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 ModelGroup = Literal["fast", "reasoning", "budget", "sovereign"]
 # Node palette (matches the Agent Studio design):
@@ -26,6 +26,11 @@ NODE_TYPES: tuple[str, ...] = (
     "input", "his_emr", "pii_mask", "knowledge", "llm", "condition", "tool", "approval", "structured_output", "output"
 )
 AgentCategory = Literal["clinical", "admin", "consultation"]
+# Fixed department list (monitoring filters group by it). Keep in sync with frontend/src/types.ts.
+DEPARTMENTS: tuple[str, ...] = (
+    "內科部", "外科部", "急診醫學部", "心臟血管中心", "神經醫學中心", "新陳代謝科", "放射線部", "護理部", "藥劑部",
+    "感染管制中心", "臨床試驗與轉譯研究中心", "智慧醫療組 (IT)",
+)
 
 
 class RoutingPolicy(BaseModel):
@@ -75,7 +80,7 @@ class AgentIn(BaseModel):
     description: str = ""
     instructions: str = ""
     category: AgentCategory = "clinical"
-    department: str = ""  # free text, e.g. 心臟內科 (CV)
+    department: str = ""  # one of DEPARTMENTS or "" (legacy free-text values read back as "")
     code: str = ""  # short specialty code shown on hub cards, e.g. CARD-801
     model_group: ModelGroup = "fast"
     temperature: float = Field(default=0.3, ge=0, le=2)
@@ -84,6 +89,11 @@ class AgentIn(BaseModel):
     connectors: list[Connector] = Field(default_factory=list)
     flow: Flow = Field(default_factory=Flow)
     test_cases: list[TestCase] = Field(default_factory=list)
+
+    @field_validator("department", mode="before")
+    @classmethod
+    def _known_department(cls, v: object) -> str:
+        return v if isinstance(v, str) and v in DEPARTMENTS else ""
 
 
 class AgentOut(AgentIn):
@@ -120,6 +130,11 @@ class RunRequest(BaseModel):
     use_published: bool = False
 
 
+class ApproveRequest(BaseModel):
+    session_id: str
+    approve: bool = True
+
+
 class StepTrace(BaseModel):
     node_id: str
     type: str
@@ -127,6 +142,9 @@ class StepTrace(BaseModel):
     group: str | None = None
     summary: str
     ms: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float = 0.0
 
 
 class Citation(BaseModel):
@@ -199,3 +217,61 @@ class ConnectorStats(BaseModel):
     invocations_today: int = 0
     mcp_nodes: int = 0
 
+
+
+# ------------------------------------------------------------------ monitoring (admin-only)
+class ModelSlice(BaseModel):
+    model: str
+    requests: int = 0
+    tokens: int = 0
+    cost_usd: float = 0.0
+
+
+class DailyPoint(BaseModel):
+    date: str  # YYYY-MM-DD, Asia/Taipei
+    requests: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float = 0.0
+    by_model: list[ModelSlice] = Field(default_factory=list)
+
+
+class MonitoringSummary(BaseModel):
+    range_from: str
+    range_to: str
+    department: str = ""
+    requests: int = 0
+    failed: int = 0
+    fallbacks: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float = 0.0
+    avg_latency_ms: int = 0
+    # deltas vs the previous period of the same length (None when the previous period is empty)
+    requests_delta_pct: float | None = None
+    tokens_delta_pct: float | None = None
+    cost_delta_pct: float | None = None
+    active_agents: int = 0  # agents with >=1 call in range
+    total_agents: int = 0
+    published_agents: int = 0
+    month_cost_usd: float = 0.0  # calendar month to date, all departments
+    monthly_budget_usd: float = 0.0
+    usd_twd_rate: float = 0.0
+    daily: list[DailyPoint] = Field(default_factory=list)
+    models: list[str] = Field(default_factory=list)  # every model seen in range, for chart legend
+
+
+class AgentUsageRow(BaseModel):
+    agent_id: str
+    name: str = ""
+    department: str = ""
+    owner_email: str = ""
+    status: str = ""
+    main_model: str = ""
+    main_group: str = ""
+    requests: int = 0
+    failed: int = 0
+    fallbacks: int = 0
+    tokens: int = 0
+    cost_usd: float = 0.0
+    avg_latency_ms: int = 0

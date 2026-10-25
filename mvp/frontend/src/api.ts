@@ -1,6 +1,6 @@
 import { idToken } from "./firebase";
 import { MOCK, mockApi } from "./mock";
-import type { ActionSpec, AgentIn, AgentOut, AuditEntry, ConnectorIn, ConnectorOut, ConnectorStats, ConnectorTypes, Flow, HubStats, KnowledgeFile, Me, RunResponse, TestResult } from "./types";
+import type { ActionSpec, AgentIn, AgentOut, AgentUsageRow, AuditEntry, ConnectorIn, ConnectorOut, ConnectorStats, ConnectorTypes, Flow, HubStats, KnowledgeFile, Me, MonitoringQuery, MonitoringSummary, RunResponse, TestResult, UsageSort } from "./types";
 
 async function call<T>(path: string, init: RequestInit = {}, json = true): Promise<T> {
   const token = await idToken();
@@ -15,6 +15,8 @@ async function call<T>(path: string, init: RequestInit = {}, json = true): Promi
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }
 
+const qs = (q: MonitoringQuery) => new URLSearchParams({ from: q.from, to: q.to, department: q.department }).toString();
+
 const realApi = {
   me: () => call<Me>("/api/me"),
   stats: () => call<HubStats>("/api/agents/stats"),
@@ -28,6 +30,8 @@ const realApi = {
   deleteAgent: (id: string) => call<void>(`/api/agents/${id}`, { method: "DELETE" }),
   run: (id: string, message: string, session_id?: string, use_published = false) =>
     call<RunResponse>(`/api/agents/${id}/run`, { method: "POST", body: JSON.stringify({ message, session_id, use_published }) }),
+  approve: (id: string, session_id: string, approve: boolean) =>
+    call<RunResponse>(`/api/agents/${id}/approve`, { method: "POST", body: JSON.stringify({ session_id, approve }) }),
   listKnowledge: (agentId: string) => call<KnowledgeFile[]>(`/api/agents/${agentId}/knowledge`),
   library: () => call<KnowledgeFile[]>("/api/knowledge"),
   uploadKnowledge: (agentId: string, file: File) => {
@@ -46,6 +50,14 @@ const realApi = {
   testConnector: (id: string) => call<TestResult>(`/api/connectors/${id}/test`, { method: "POST" }),
   connectorActions: (id: string) => call<ActionSpec[]>(`/api/connectors/${id}/actions`),
   deleteConnector: (id: string) => call<void>(`/api/connectors/${id}`, { method: "DELETE" }),
+  monitoringSummary: (q: MonitoringQuery) => call<MonitoringSummary>(`/api/monitoring/summary?${qs(q)}`),
+  monitoringAgents: (q: MonitoringQuery, sort: UsageSort) => call<AgentUsageRow[]>(`/api/monitoring/agents?${qs(q)}&sort=${sort}`),
+  /** CSV needs the bearer token, so it is fetched as a Blob and saved client-side. */
+  monitoringCsv: async (q: MonitoringQuery) => {
+    const res = await fetch(`/api/monitoring/export.csv?${qs(q)}`, { headers: { Authorization: `Bearer ${await idToken()}` } });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.blob();
+  },
 };
 
 export const api: typeof realApi = MOCK ? (mockApi as typeof realApi) : realApi;

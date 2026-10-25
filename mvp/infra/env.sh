@@ -28,6 +28,10 @@ export ALLOWED_DOMAINS="ikala.ai"
 
 # De-identification (option B). Leave false until a KMS key exists and infra/06-deid-key.sh has run.
 export DEID_ENABLED="false"
+# Admin dashboard (Agent 監控與成本): who is admin, hospital-wide monthly cap (USD), NT$ display rate.
+export ADMIN_EMAILS="esther.shih@ikala.ai"
+export MONTHLY_BUDGET_USD="5000"
+export USD_TWD_RATE="32"
 
 # Knowledge: Vertex AI RAG Engine. asia-east1 is a Preview region for RAG Engine (checked 2026-10-24).
 export RAG_ENABLED="true"

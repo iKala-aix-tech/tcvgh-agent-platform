@@ -5,6 +5,8 @@ agents/{agentId}/versions/{n}    immutable snapshot on publish
 agents/{agentId}/knowledge/{id}  uploaded knowledge files (name, gcs_uri, rag_file, status)
 sessions/{sessionId}             test-chat / channel conversations, pseudonymized content only
 audit/{autoId}                   who did what, when (append-only)
+usage/{autoId}                   one row per LLM call: tokens, cost, served model (no prompt text)
+usage_daily/{day}_{agentId}      per-agent daily rollup read by the admin monitoring dashboard
 """
 from datetime import UTC, datetime
 from functools import lru_cache

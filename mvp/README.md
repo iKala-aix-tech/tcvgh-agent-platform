@@ -89,8 +89,20 @@ out until credentials / VPN exist. Fallback chains are declared under `router_se
   `deidentify_content`, deterministic crypto with a KMS-wrapped key). Off by default in the
   sandbox (`DEID_ENABLED=false`) so you can smoke-test before creating the KMS key.
 - `engine/llm.py` is the thin OpenAI-SDK client to LiteLLM, tagging each request with
-  `agent_id`, `model_group` and `user` for spend attribution. Known gap: the trace shows the
-  group alias, not the concrete model; read LiteLLM's `x-litellm-model-id` response header to fix.
+  `agent_id`, `model_group` and `user` for spend attribution. It returns the served model, token
+  counts and an estimated cost from its own `PRICES` table (USD per 1M tokens; verify against the
+  Vertex pricing page before billing anyone). `PRIMARY` mirrors `litellm/config.yaml`; a served model
+  outside the group's primary is counted as a fallback.
+- `engine/usage.py` is the **usage ledger** behind the admin dashboard: one `usage` row per LLM call
+  (no prompt text) plus a `usage_daily/{day}_{agentId}` rollup bumped with `Increment`, Asia/Taipei days.
+  Ledger failures are logged, never raised. LiteLLM's own spend DB (Cloud SQL) stays a phase-2 item.
+
+**Monitoring & cost** (`routers/monitoring.py`, `frontend/src/pages/Monitoring.tsx`, admin-only) —
+`/monitoring` shows KPI cards (tokens, calls, cost vs `MONTHLY_BUDGET_USD`, active agents), a daily
+stacked chart by served model (Recharts) and a per-agent leaderboard with CSV export. Range and
+department filters; departments are a fixed list (`DEPARTMENTS` in `schemas.py` and `types.ts`).
+Admins = `ADMIN_EMAILS` (comma-separated, checked at sign-in) or a Firebase `role=admin` claim.
+Needs the `usage_daily` composite index from `02-foundation.sh`.
 
 **Knowledge** (`backend/app/engine/rag.py`, `routers/knowledge.py`) — Vertex AI **RAG Engine**, one corpus
 per agent, created lazily on the first upload. Files go to the upload bucket (audit copy) and are pushed with

@@ -11,6 +11,12 @@ export const MODEL_GROUPS: { id: ModelGroup; label: string; hint: string }[] = [
   { id: "sovereign", label: "sovereign · 院內模型", hint: "gpt-oss-120b → Gemma 4; never falls back to cloud" },
 ];
 
+// Fixed department list; mirrors DEPARTMENTS in backend/app/schemas.py.
+export const DEPARTMENTS = [
+  "內科部", "外科部", "急診醫學部", "心臟血管中心", "神經醫學中心", "新陳代謝科", "放射線部", "護理部", "藥劑部",
+  "感染管制中心", "臨床試驗與轉譯研究中心", "智慧醫療組 (IT)",
+] as const;
+
 export const CATEGORIES: { id: AgentCategory; label: string }[] = [
   { id: "clinical", label: "臨床診療 (Clinical)" },
   { id: "admin", label: "行政與衛教 (Admin & Education)" },
@@ -109,6 +115,9 @@ export interface StepTrace {
   group?: string | null;
   summary: string;
   ms: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
 }
 export interface Citation { source: string; uri: string; score?: number | null; text: string }
 export interface RunResponse {
@@ -140,6 +149,24 @@ export interface HubStats {
 }
 
 export interface Me { uid: string; email: string; name: string; role: string }
+
+// ---- monitoring (admin-only)
+export interface ModelSlice { model: string; requests: number; tokens: number; cost_usd: number }
+export interface DailyPoint { date: string; requests: number; prompt_tokens: number; completion_tokens: number; cost_usd: number; by_model: ModelSlice[] }
+export interface MonitoringSummary {
+  range_from: string; range_to: string; department: string;
+  requests: number; failed: number; fallbacks: number; prompt_tokens: number; completion_tokens: number; cost_usd: number; avg_latency_ms: number;
+  requests_delta_pct?: number | null; tokens_delta_pct?: number | null; cost_delta_pct?: number | null;
+  active_agents: number; total_agents: number; published_agents: number;
+  month_cost_usd: number; monthly_budget_usd: number; usd_twd_rate: number;
+  daily: DailyPoint[]; models: string[];
+}
+export interface AgentUsageRow {
+  agent_id: string; name: string; department: string; owner_email: string; status: string; main_model: string; main_group: string;
+  requests: number; failed: number; fallbacks: number; tokens: number; cost_usd: number; avg_latency_ms: number;
+}
+export type UsageSort = "requests" | "tokens" | "cost_usd" | "cost_per_call" | "avg_latency_ms" | "fallbacks";
+export interface MonitoringQuery { from: string; to: string; department: string }
 
 /** Strip server-managed fields before PUT. */
 export const toAgentIn = (a: AgentOut): AgentIn => ({

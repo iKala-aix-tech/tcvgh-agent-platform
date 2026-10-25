@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     firestore_database: str = "tcvgh-agent-platform"
     upload_bucket: str
     allowed_domains: str = ""  # comma-separated Workspace domains allowed to sign in
+    admin_emails: str = "esther.shih@ikala.ai"  # comma-separated; these sign in as role=admin
+
+    # Monitoring & cost (admin dashboard). Cap is hospital-wide per calendar month, USD.
+    monthly_budget_usd: float = 5000.0
+    usd_twd_rate: float = 32.0
 
     deid_enabled: bool = False
     deid_kms_wrapped_key: str = ""
@@ -35,6 +40,10 @@ class Settings(BaseSettings):
     @property
     def allowed_domain_list(self) -> list[str]:
         return [d.strip().lower() for d in self.allowed_domains.split(",") if d.strip()]
+
+    @property
+    def admin_email_list(self) -> list[str]:
+        return [e.strip().lower() for e in self.admin_emails.split(",") if e.strip()]
 
 
 @lru_cache

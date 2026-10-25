@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import User, current_user
 from .config import settings
-from .routers import agents, audit, connectors, knowledge, runs
+from .routers import agents, audit, connectors, knowledge, monitoring, runs
 
 app = FastAPI(title="TCVGH Agent Platform API", version="0.2.0")
 
@@ -17,6 +17,7 @@ app.include_router(runs.router)
 app.include_router(knowledge.router)
 app.include_router(audit.router)
 app.include_router(connectors.router)
+app.include_router(monitoring.router)
 
 
 @app.get("/api/health")
