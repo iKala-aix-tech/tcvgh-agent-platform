@@ -170,7 +170,7 @@ export default function ConnectorSetup() {
         </Section>
 
         <Section n="04" title="醫療審核閘道與合規設定 (Healthcare Audit & Guardrails)">
-          {[["redact_pii", "shield", "自動過濾病患個資 (PII Redaction Engine)", "送出前以 Sensitive Data Protection 將姓名、病歷號、身分證替換為識別標籤（需 DEID_ENABLED=true）。", "強制啟用"],
+          {[["redact_pii", "shield", "自動過濾病患個資 (PII Redaction Engine)", "送出前以 Sensitive Data Protection 將姓名、病歷號、身分證替換為識別標籤。", "強制啟用"],
             ["audit_payloads", "receipt_long", "記錄所有 Payload 至中榮稽核日誌 (Audit Log)", "每次工具呼叫的參數與結果狀態寫入 audit 集合供資安審查。", "保留 180 天"]].map(([k, icon, title, desc, tag]) => (
             <label key={k} className="mb-2 flex items-center gap-4 rounded-lg bg-surface-container-low px-4 py-3">
               <Icon name={icon} className="text-primary" />

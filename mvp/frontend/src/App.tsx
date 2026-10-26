@@ -8,6 +8,7 @@ import Login from "./pages/Login";
 import Hub from "./pages/Hub";
 import Studio from "./pages/Studio";
 import Sandbox from "./pages/Sandbox";
+import SandboxCenter from "./pages/SandboxCenter";
 import Knowledge from "./pages/Knowledge";
 import Audit from "./pages/Audit";
 import Monitoring from "./pages/Monitoring";
@@ -32,14 +33,14 @@ export default function App() {
         <Route element={<Shell user={user} role={role ?? "builder"} />}>
           <Route index element={<Navigate to="/hub" replace />} />
           <Route path="/hub" element={<Hub user={user} role={role ?? "builder"} />} />
-          <Route path="/studio" element={<Studio />} />
+          <Route path="/studio" element={<Navigate to="/hub" replace />} />
           <Route path="/studio/:id" element={<Studio />} />
-          <Route path="/sandbox" element={<Sandbox />} />
-          <Route path="/sandbox/:id" element={<Sandbox />} />
+          <Route path="/sandbox" element={<SandboxCenter role={role ?? "builder"} />} />
+          <Route path="/sandbox/:id" element={<Sandbox role={role ?? "builder"} />} />
           <Route path="/connectors" element={<Connectors />} />
           <Route path="/connectors/new" element={<ConnectorSetup />} />
           <Route path="/connectors/:id" element={<ConnectorSetup />} />
-          <Route path="/knowledge" element={<Knowledge />} />
+          <Route path="/knowledge" element={<Knowledge role={role ?? "builder"} />} />
           <Route path="/audit" element={role === null ? <div className="grid h-full place-items-center"><Spinner /></div> : role === "admin" ? <Audit /> : <Navigate to="/hub" replace />} />
           <Route path="/monitoring" element={role === null ? <div className="grid h-full place-items-center"><Spinner /></div> : role === "admin" ? <Monitoring /> : <Navigate to="/hub" replace />} />
           <Route path="*" element={<Navigate to="/hub" replace />} />

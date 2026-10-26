@@ -72,7 +72,7 @@ export default function Hub({ user, role }: { user: User; role: string }) {
           { label: "我的專屬 AGENT", value: stats?.my_agents, unit: "組配置", sub: `含 ${stats?.my_published ?? 0} 個已發布`, icon: "smart_toy" },
           { label: "已發布臨床上線", value: stats?.hospital_published, unit: "個 Production", sub: "全院可見並可對話", icon: "verified" },
           { label: "今日全院呼叫量", value: stats?.runs_today, unit: "次", sub: "沙盒 + 已發布版本", icon: "monitoring" },
-          { label: "知識庫文件", value: stats?.knowledge_files, unit: "份", sub: stats?.deid_enabled ? "去識別化已啟用" : "去識別化未啟用（沙盒）", icon: "cloud_done" },
+          { label: "知識庫文件", value: stats?.knowledge_files, unit: "份", sub: "索引前一律去識別化", icon: "cloud_done" },
         ].map((s) => (
           <div key={s.label} className="card flex items-center justify-between px-5 py-4">
             <div><p className="font-mono text-[10px] uppercase tracking-wider text-outline">{s.label}</p>
@@ -127,7 +127,6 @@ export default function Hub({ user, role }: { user: User; role: string }) {
                     <div className="mt-3 flex flex-wrap gap-1.5">
                       <span className="chip"><Icon name="psychology" className="text-[13px]" />{a.model_group}</span>
                       {a.knowledge_count > 0 && <span className="chip"><Icon name="menu_book" className="text-[13px]" />{a.knowledge_count} 份知識文件 (RAG)</span>}
-                      {a.flow.nodes.some((n) => n.type === "pii_mask") && <span className="chip"><Icon name="shield" className="text-[13px]" />PII 遮蔽</span>}
                       {a.routing.sovereign_only && <span className="chip"><Icon name="lock" className="text-[13px]" />院內模型</span>}
                     </div>
                   </div>

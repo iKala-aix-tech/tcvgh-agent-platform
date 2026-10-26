@@ -1,130 +1,243 @@
-"""Knowledge files: upload -> GCS (audit copy) -> Vertex AI RAG Engine corpus (one per agent).
+"""Hospital knowledge library (院內指引與醫學知識庫): documents/{id}, attached to agents by id.
 
-The corpus is created lazily on the first upload so agents without knowledge cost nothing.
-Indexing happens synchronously inside the request (RAG Engine `upload_file` chunks + embeds);
-Cloud Run timeout is 300 s which comfortably covers a 25 MB PDF.
+Decided 2026-10-26: one shared library instead of files owned by an agent. No review step: an
+upload is usable hospital-wide as soon as it is indexed. Everyone signed in can list, preview and
+attach any document; only the uploader or an admin replaces, edits or deletes it.
+
+Every file goes the same way (see _index): the original into the CMEK upload bucket (kept for
+audit + re-index), its text extracted and de-identified, the masked text saved next to it (the
+"preview" users see) and indexed into the single hospital RAG corpus. RAG Engine never receives
+the original. Indexing is synchronous; Cloud Run's 300 s timeout covers a 25 MB file.
 """
 import logging
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from google.api_core.exceptions import NotFound
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import PlainTextResponse
 from google.cloud import firestore, storage
 
 from .. import db
-from ..auth import User, current_user
+from ..auth import User, current_user, require_admin
 from ..config import settings
-from ..schemas import KnowledgeFileOut
-from .agents import load_editable, load_visible
+from ..engine import deid
+from ..engine.extract import NoTextError, extract_text
+from ..schemas import DEPARTMENTS, AgentRef, DocCategory, DocumentOut, DocumentPatch
 
-router = APIRouter(tags=["knowledge"])
+router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 log = logging.getLogger(__name__)
 
 ALLOWED_SUFFIXES = {".pdf", ".txt", ".md", ".docx", ".pptx", ".html", ".csv", ".json"}
+PREVIEW_CHARS = 200_000
 
 
-def _out(agent_id: str, agent_name: str, doc) -> KnowledgeFileOut:
-    return KnowledgeFileOut(id=doc.id, agent_id=agent_id, agent_name=agent_name, **(doc.to_dict() or {}))
+def _col():
+    return db.client().collection("documents")
 
 
-@router.get("/api/agents/{agent_id}/knowledge", response_model=list[KnowledgeFileOut])
-def list_knowledge(agent_id: str, user: User = Depends(current_user)):
-    snap = load_visible(agent_id, user)
-    name = (snap.to_dict() or {}).get("name", "")
-    q = snap.reference.collection("knowledge").order_by("created_at", direction=firestore.Query.DESCENDING)
-    return [_out(agent_id, name, d) for d in q.stream()]
-
-
-@router.get("/api/knowledge", response_model=list[KnowledgeFileOut])
-def library(user: User = Depends(current_user)):
-    """Knowledge library page: every file on agents the user can see (own + published)."""
-    col = db.client().collection("agents")
-    agents: dict[str, dict] = {}
-    for d in col.where(filter=firestore.FieldFilter("owner_uid", "==", user.uid)).stream():
-        agents[d.id] = d.to_dict() or {}
-    for d in col.where(filter=firestore.FieldFilter("status", "==", "published")).stream():
-        agents.setdefault(d.id, d.to_dict() or {})
-    out: list[KnowledgeFileOut] = []
-    for aid, a in agents.items():
-        if not a.get("knowledge_count"):
-            continue
-        for f in col.document(aid).collection("knowledge").stream():
-            out.append(_out(aid, a.get("name", ""), f))
-    return sorted(out, key=lambda f: str(f.created_at or ""), reverse=True)
-
-
-@router.post("/api/agents/{agent_id}/knowledge", response_model=KnowledgeFileOut, status_code=201)
-async def upload_knowledge(agent_id: str, file: UploadFile = File(...), user: User = Depends(current_user)):
+def _bucket():
     s = settings()
-    if not s.rag_enabled:
-        raise HTTPException(503, "knowledge is disabled (RAG_ENABLED=false)")
-    snap = load_editable(agent_id, user)
-    agent = snap.to_dict() or {}
+    return storage.Client(project=s.google_cloud_project).bucket(s.upload_bucket)
+
+
+def _blob_path(uri: str) -> str:
+    return uri.removeprefix(f"gs://{settings().upload_bucket}/")
+
+
+def _attachments() -> dict[str, list[AgentRef]]:
+    """doc id -> agents attaching it (all agents; names are not sensitive and the library is hospital-wide)."""
+    out: dict[str, list[AgentRef]] = {}
+    for a in db.client().collection("agents").select(["name", "knowledge_doc_ids"]).stream():
+        d = a.to_dict() or {}
+        for doc_id in d.get("knowledge_doc_ids") or []:
+            out.setdefault(doc_id, []).append(AgentRef(id=a.id, name=d.get("name", "")))
+    return out
+
+
+def _out(snap, attached: dict[str, list[AgentRef]] | None = None) -> DocumentOut:
+    agents = (attached if attached is not None else _attachments()).get(snap.id, [])
+    return DocumentOut(id=snap.id, agents=agents, **(snap.to_dict() or {}))
+
+
+def _load(doc_id: str):
+    snap = _col().document(doc_id).get()
+    if not snap.exists:
+        raise HTTPException(404, "document not found")
+    return snap
+
+
+def _load_editable(doc_id: str, user: User):
+    snap = _load(doc_id)
+    if (snap.to_dict() or {}).get("uploaded_uid") != user.uid and user.role != "admin":
+        raise HTTPException(403, "only the uploader or an admin can change this document")
+    return snap
+
+
+async def _read_upload(file: UploadFile) -> tuple[str, str, bytes]:
     filename = Path(file.filename or "upload").name
     suffix = Path(filename).suffix.lower()
     if suffix not in ALLOWED_SUFFIXES:
         raise HTTPException(415, f"unsupported file type {suffix}; allowed: {', '.join(sorted(ALLOWED_SUFFIXES))}")
     data = await file.read()
-    if len(data) > s.max_upload_mb * 1024 * 1024:
-        raise HTTPException(413, f"file exceeds {s.max_upload_mb} MB")
+    if len(data) > settings().max_upload_mb * 1024 * 1024:
+        raise HTTPException(413, f"file exceeds {settings().max_upload_mb} MB")
+    return filename, suffix, data
 
-    # 1. Audit copy in the upload bucket (versioned, no public access).
-    kref = snap.reference.collection("knowledge").document()
-    blob_path = f"agents/{agent_id}/knowledge/{kref.id}/{filename}"
-    bucket = storage.Client(project=s.google_cloud_project).bucket(s.upload_bucket)
-    bucket.blob(blob_path).upload_from_string(data, content_type=file.content_type or "application/octet-stream")
-    gcs_uri = f"gs://{s.upload_bucket}/{blob_path}"
 
-    record = {"name": filename, "content_type": file.content_type or "", "size_bytes": len(data), "gcs_uri": gcs_uri,
-              "rag_file": None, "status": "indexing", "error": "", "uploaded_by": user.email, "created_at": db.now()}
-    kref.set(record)
-
-    # 2. Index into the agent's corpus (created on first upload).
+def _index(doc_id: str, version: int, filename: str, data: bytes, content_type: str) -> dict:
+    """Store the original, de-identify its text, store + index the masked text. Returns the fields to
+    write on the document. Raises NoTextError (unreadable file) or the RAG/DLP error."""
     from ..engine import rag
 
+    base = f"knowledge/{doc_id}/v{version}"
+    bucket = _bucket()
+    original = f"{base}/{filename}"
+    bucket.blob(original).upload_from_string(data, content_type=content_type or "application/octet-stream")
+    masked = deid.deidentify(extract_text(data, Path(filename).suffix.lower()))
+    bucket.blob(f"{base}/deidentified.txt").upload_from_string(masked.encode(), content_type="text/plain; charset=utf-8")
+    with tempfile.TemporaryDirectory() as tmp:
+        local = Path(tmp) / "upload.txt"  # ASCII path; the real name goes in display_name
+        local.write_text(masked, encoding="utf-8")
+        rag_file = rag.upload_file(rag.hospital_corpus(), str(local), filename)
+    s = settings()
+    return {"gcs_uri": f"gs://{s.upload_bucket}/{original}", "deid_uri": f"gs://{s.upload_bucket}/{base}/deidentified.txt",
+            "rag_file": rag_file, "chars": len(masked), "status": "indexed", "error": ""}
+
+
+def _fail(exc: Exception) -> HTTPException:
+    msg = f"{exc.__class__.__name__}: {exc}"[:500]
+    return HTTPException(422 if isinstance(exc, NoTextError) else 502, f"indexing failed: {msg}")
+
+
+def _check_meta(category: str, department: str) -> None:
+    if category not in DocCategory.__args__:  # type: ignore[attr-defined]
+        raise HTTPException(422, f"unknown category {category}")
+    if department and department not in DEPARTMENTS:
+        raise HTTPException(422, f"unknown department {department}")
+
+
+@router.get("", response_model=list[DocumentOut])
+def list_documents(user: User = Depends(current_user)):
+    attached = _attachments()
+    docs = [_out(d, attached) for d in _col().stream()]
+    return sorted(docs, key=lambda d: str(d.updated_at or d.created_at or ""), reverse=True)
+
+
+@router.post("", response_model=DocumentOut, status_code=201)
+async def upload_document(file: UploadFile = File(...), category: str = Form(...), department: str = Form(""),
+                          user: User = Depends(current_user)):
+    if not settings().rag_enabled:
+        raise HTTPException(503, "knowledge is disabled (RAG_ENABLED=false)")
+    _check_meta(category, department)
+    filename, _, data = await _read_upload(file)
+    ref = _col().document()
+    record = {"name": filename, "category": category, "department": department, "content_type": file.content_type or "",
+              "size_bytes": len(data), "version": 1, "status": "indexing", "error": "", "rag_file": None,
+              "uploaded_by": user.email, "uploaded_uid": user.uid, "created_at": db.now(), "updated_at": db.now()}
+    ref.set(record)
     try:
-        corpus = agent.get("rag_corpus")
-        if not corpus:
-            corpus = rag.create_corpus(f"tcvgh-agent-{agent_id}", agent.get("name", ""))
-            snap.reference.update({"rag_corpus": corpus})
-        with tempfile.TemporaryDirectory() as tmp:
-            local = Path(tmp) / f"upload{suffix}"  # ASCII path; real name goes in display_name
-            local.write_bytes(data)
-            rag_file = rag.upload_file(corpus, str(local), filename)
-        record.update({"rag_file": rag_file, "status": "indexed"})
-        kref.update({"rag_file": rag_file, "status": "indexed"})
-        snap.reference.update({"knowledge_count": firestore.Increment(1), "updated_at": db.now()})
-    except Exception as exc:  # keep the record so the UI can show the failure and allow retry/delete
-        msg = f"{exc.__class__.__name__}: {exc}"[:500]
-        record.update({"status": "error", "error": msg})
-        kref.update({"status": "error", "error": msg})
-        db.audit(user.uid, "knowledge.error", user.email, agent_id=agent_id, file=filename, error=msg)
-        raise HTTPException(502, f"indexing failed: {msg}") from exc
-
-    db.audit(user.uid, "knowledge.upload", user.email, agent_id=agent_id, file=filename, bytes=len(data))
-    return KnowledgeFileOut(id=kref.id, agent_id=agent_id, agent_name=agent.get("name", ""), **record)
+        ref.update(_index(ref.id, 1, filename, data, file.content_type or ""))
+    except Exception as exc:  # keep the record so the library shows the failure and it can be replaced/deleted
+        err = _fail(exc)
+        ref.update({"status": "error", "error": err.detail})
+        db.audit(user.uid, "knowledge.error", user.email, doc_id=ref.id, file=filename, error=err.detail)
+        raise err from exc
+    db.audit(user.uid, "knowledge.upload", user.email, doc_id=ref.id, file=filename, bytes=len(data), deidentified=True)
+    return _out(ref.get())
 
 
-@router.delete("/api/agents/{agent_id}/knowledge/{file_id}", status_code=204)
-def delete_knowledge(agent_id: str, file_id: str, user: User = Depends(current_user)):
-    snap = load_editable(agent_id, user)
-    kref = snap.reference.collection("knowledge").document(file_id)
-    k = kref.get()
-    if not k.exists:
-        raise HTTPException(404, "file not found")
-    rec = k.to_dict() or {}
-    if rec.get("rag_file"):
-        from ..engine import rag
+@router.post("/{doc_id}/version", response_model=DocumentOut)
+async def replace_document(doc_id: str, file: UploadFile = File(...), user: User = Depends(current_user)):
+    """Upload a new version: index it first, then drop the old ragFile, so attached agents never see a gap.
+    Older originals stay in GCS (bucket versioning + per-version paths)."""
+    from ..engine import rag
 
-        rag.delete_file(rec["rag_file"])
+    snap = _load_editable(doc_id, user)
+    cur = snap.to_dict() or {}
+    filename, _, data = await _read_upload(file)
+    version = int(cur.get("version", 1)) + 1
     try:
-        s = settings()
-        storage.Client(project=s.google_cloud_project).bucket(s.upload_bucket).blob(
-            rec["gcs_uri"].removeprefix(f"gs://{s.upload_bucket}/")).delete()
-    except NotFound:  # audit copy already gone; not fatal
-        log.warning("gcs object missing for knowledge file %s", file_id)
-    kref.delete()
-    if rec.get("status") == "indexed":
-        snap.reference.update({"knowledge_count": firestore.Increment(-1), "updated_at": db.now()})
-    db.audit(user.uid, "knowledge.delete", user.email, agent_id=agent_id, file=rec.get("name"))
+        fields = _index(doc_id, version, filename, data, file.content_type or "")
+    except Exception as exc:  # the previous version stays live
+        err = _fail(exc)
+        db.audit(user.uid, "knowledge.error", user.email, doc_id=doc_id, file=filename, error=err.detail)
+        raise err from exc
+    if cur.get("rag_file"):
+        rag.delete_file(cur["rag_file"])
+    snap.reference.update({**fields, "name": filename, "content_type": file.content_type or "", "size_bytes": len(data),
+                           "version": version, "updated_at": db.now()})
+    db.audit(user.uid, "knowledge.replace", user.email, doc_id=doc_id, file=filename, version=version, bytes=len(data))
+    return _out(snap.reference.get())
+
+
+@router.patch("/{doc_id}", response_model=DocumentOut)
+def update_document(doc_id: str, body: DocumentPatch, user: User = Depends(current_user)):
+    snap = _load_editable(doc_id, user)
+    _check_meta(body.category, body.department)
+    snap.reference.update({"category": body.category, "department": body.department, "updated_at": db.now()})
+    db.audit(user.uid, "knowledge.update", user.email, doc_id=doc_id, file=(snap.to_dict() or {}).get("name", ""))
+    return _out(snap.reference.get())
+
+
+@router.post("/{doc_id}/reindex", response_model=DocumentOut)
+def reindex_document(doc_id: str, user: User = Depends(require_admin)):
+    """Re-run extraction + de-identification on the stored original with the CURRENT inspect template
+    (e.g. after adding an infoType), then swap the ragFile. The UI calls this one document at a time."""
+    from ..engine import rag
+
+    snap = _load(doc_id)
+    cur = snap.to_dict() or {}
+    if not cur.get("gcs_uri"):
+        raise HTTPException(409, "document has no stored original")
+    data = _bucket().blob(_blob_path(cur["gcs_uri"])).download_as_bytes()
+    try:
+        fields = _index(doc_id, int(cur.get("version", 1)), cur["name"], data, cur.get("content_type", ""))
+    except Exception as exc:
+        err = _fail(exc)
+        snap.reference.update({"status": "error", "error": err.detail})
+        db.audit(user.uid, "knowledge.error", user.email, doc_id=doc_id, file=cur["name"], error=err.detail)
+        raise err from exc
+    if cur.get("rag_file") and cur["rag_file"] != fields["rag_file"]:
+        rag.delete_file(cur["rag_file"])
+    snap.reference.update({**fields, "updated_at": db.now()})
+    db.audit(user.uid, "knowledge.reindex", user.email, doc_id=doc_id, file=cur["name"], deidentified=True)
+    return _out(snap.reference.get())
+
+
+@router.get("/{doc_id}/preview", response_class=PlainTextResponse)
+def preview_document(doc_id: str, user: User = Depends(current_user)):
+    """The de-identified text exactly as RAG Engine received it (first PREVIEW_CHARS characters)."""
+    cur = _load(doc_id).to_dict() or {}
+    if not cur.get("deid_uri"):
+        raise HTTPException(409, "document is not indexed yet")
+    text = _bucket().blob(_blob_path(cur["deid_uri"])).download_as_text(encoding="utf-8")
+    return text[:PREVIEW_CHARS]
+
+
+@router.delete("/{doc_id}", status_code=204)
+def delete_document(doc_id: str, user: User = Depends(current_user)):
+    """Detach from every agent, drop the ragFile and the record. GCS originals are kept (audit)."""
+    from ..engine import rag
+
+    snap = _load_editable(doc_id, user)
+    cur = snap.to_dict() or {}
+    agents = db.client().collection("agents")
+    for a in agents.where(filter=firestore.FieldFilter("knowledge_doc_ids", "array_contains", doc_id)).stream():
+        a.reference.update({"knowledge_doc_ids": firestore.ArrayRemove([doc_id])})
+    if cur.get("rag_file"):
+        rag.delete_file(cur["rag_file"])
+    snap.reference.delete()
+    db.audit(user.uid, "knowledge.delete", user.email, doc_id=doc_id, file=cur.get("name", ""))
+
+
+def resolve_rag_files(doc_ids: list[str]) -> list[str]:
+    """ragFile names of the attached, indexed documents (missing/failed ones are skipped)."""
+    if not doc_ids:
+        return []
+    refs = [_col().document(i) for i in doc_ids]
+    out = []
+    for snap in db.client().get_all(refs):
+        d = snap.to_dict() or {}
+        if snap.exists and d.get("status") == "indexed" and d.get("rag_file"):
+            out.append(d["rag_file"])
+    return out

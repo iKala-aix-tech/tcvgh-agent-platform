@@ -114,3 +114,41 @@ def complete(*, group: str, system: str, messages: list[dict], agent_id: str, us
 def reset_client_cache() -> None:
     """ID tokens expire after 1h; call when a 401 comes back from Cloud Run."""
     _client.cache_clear()
+
+
+GROUPS = ("fast", "reasoning", "budget", "sovereign")  # what agents and nodes can select
+_ROUTING_TTL = 300.0
+_routing_cache: tuple[float, list[dict]] | None = None
+
+
+def routing_table() -> list[dict]:
+    """What each selectable group really runs, read from the live LiteLLM proxy (/model/info +
+    /router/settings) so the Studio labels cannot drift from litellm/config.yaml. Cached 5 min.
+    [{id, models: [provider model ids], fallbacks: [{name, models}], configured}]"""
+    global _routing_cache
+    if _routing_cache and time.monotonic() - _routing_cache[0] < _ROUTING_TTL:
+        return _routing_cache[1]
+    import httpx
+
+    s = settings()
+    headers = {"Authorization": f"Bearer {s.litellm_api_key}"}
+    tok = _id_token(s.litellm_base_url)
+    if tok:
+        headers["X-Serverless-Authorization"] = f"Bearer {tok}"
+    base = s.litellm_base_url.rstrip("/")
+    with httpx.Client(timeout=10, headers=headers) as h:
+        info = h.get(f"{base}/model/info").raise_for_status().json().get("data", [])
+        fields = h.get(f"{base}/router/settings").raise_for_status().json().get("fields", [])
+    members: dict[str, list[str]] = {}
+    for m in info:
+        model = str((m.get("litellm_params") or {}).get("model") or "")
+        members.setdefault(m.get("model_name", ""), []).append(model.split("/", 1)[-1])
+    chains: dict[str, list[str]] = {}
+    for f in fields:
+        if f.get("field_name") == "fallbacks":
+            for entry in f.get("field_value") or []:
+                chains.update({k: list(v) for k, v in entry.items()})
+    table = [{"id": g, "models": members.get(g, []), "configured": bool(members.get(g)),
+              "fallbacks": [{"name": n, "models": members.get(n, [])} for n in chains.get(g, [])]} for g in GROUPS]
+    _routing_cache = (time.monotonic(), table)
+    return table

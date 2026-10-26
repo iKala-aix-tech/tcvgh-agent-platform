@@ -1,6 +1,6 @@
 import { idToken } from "./firebase";
 import { MOCK, mockApi } from "./mock";
-import type { ActionSpec, AgentIn, AgentOut, AgentUsageRow, AuditPage, AuditQuery, AuditSummary, ConnectorIn, ConnectorOut, ConnectorStats, ConnectorTypes, Flow, HubStats, KnowledgeFile, Me, MonitoringQuery, MonitoringSummary, RunResponse, TestResult, UsageSort } from "./types";
+import type { ActionSpec, AgentIn, AgentOut, AgentUsageRow, AuditPage, AuditQuery, AuditSummary, ConnectorIn, ConnectorOut, ConnectorStats, ConnectorTypes, Flow, HubStats, SandboxActivity, DocCategory, KnowledgeDoc, Me, ModelGroupInfo, MonitoringQuery, MonitoringSummary, RunResponse, TestResult, UsageSort } from "./types";
 
 async function call<T>(path: string, init: RequestInit = {}, json = true): Promise<T> {
   const token = await idToken();
@@ -29,27 +29,47 @@ const blob = async (path: string) => {
 
 const realApi = {
   me: () => call<Me>("/api/me"),
+  modelGroups: () => call<{ groups: ModelGroupInfo[] }>("/api/models"),
   stats: () => call<HubStats>("/api/agents/stats"),
   listAgents: () => call<AgentOut[]>("/api/agents"),
   getAgent: (id: string) => call<AgentOut>(`/api/agents/${id}`),
   createAgent: (body: AgentIn) => call<AgentOut>("/api/agents", { method: "POST", body: JSON.stringify(body) }),
   updateAgent: (id: string, body: AgentIn) => call<AgentOut>(`/api/agents/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   validate: (flow: Flow) => call<{ problems: string[] }>("/api/agents/validate", { method: "POST", body: JSON.stringify(flow) }),
-  publishAgent: (id: string) => call<AgentOut>(`/api/agents/${id}/publish`, { method: "POST" }),
+  publishAgent: (id: string) => call<AgentOut>(`/api/agents/${id}/publish`, { method: "POST" }), // admin only
+  requestPublish: (id: string) => call<AgentOut>(`/api/agents/${id}/publish-request`, { method: "POST" }),
+  withdrawPublish: (id: string) => call<AgentOut>(`/api/agents/${id}/publish-request/withdraw`, { method: "POST" }),
+  reviewAgent: (id: string, approve: boolean, reason = "") =>
+    call<AgentOut>(`/api/agents/${id}/review`, { method: "POST", body: JSON.stringify({ approve, reason }) }),
+  reviewQueue: () => call<AgentOut[]>("/api/agents/reviews"),
+  sandboxActivity: () => call<SandboxActivity>("/api/agents/activity"),
   unpublishAgent: (id: string) => call<AgentOut>(`/api/agents/${id}/unpublish`, { method: "POST" }),
   deleteAgent: (id: string) => call<void>(`/api/agents/${id}`, { method: "DELETE" }),
-  run: (id: string, message: string, session_id?: string, use_published = false) =>
-    call<RunResponse>(`/api/agents/${id}/run`, { method: "POST", body: JSON.stringify({ message, session_id, use_published }) }),
+  run: (id: string, message: string, session_id?: string, use_published = false, version?: number) =>
+    call<RunResponse>(`/api/agents/${id}/run`, { method: "POST", body: JSON.stringify({ message, session_id, use_published, version }) }),
   approve: (id: string, session_id: string, approve: boolean) =>
     call<RunResponse>(`/api/agents/${id}/approve`, { method: "POST", body: JSON.stringify({ session_id, approve }) }),
-  listKnowledge: (agentId: string) => call<KnowledgeFile[]>(`/api/agents/${agentId}/knowledge`),
-  library: () => call<KnowledgeFile[]>("/api/knowledge"),
-  uploadKnowledge: (agentId: string, file: File) => {
+  listDocs: () => call<KnowledgeDoc[]>("/api/knowledge"),
+  uploadDoc: (file: File, category: DocCategory, department: string) => {
+    const fd = new FormData();
+    fd.append("file", file); fd.append("category", category); fd.append("department", department);
+    return call<KnowledgeDoc>("/api/knowledge", { method: "POST", body: fd }, false);
+  },
+  replaceDoc: (id: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    return call<KnowledgeFile>(`/api/agents/${agentId}/knowledge`, { method: "POST", body: fd }, false);
+    return call<KnowledgeDoc>(`/api/knowledge/${id}/version`, { method: "POST", body: fd }, false);
   },
-  deleteKnowledge: (agentId: string, fileId: string) => call<void>(`/api/agents/${agentId}/knowledge/${fileId}`, { method: "DELETE" }),
+  updateDoc: (id: string, category: DocCategory, department: string) =>
+    call<KnowledgeDoc>(`/api/knowledge/${id}`, { method: "PATCH", body: JSON.stringify({ category, department }) }),
+  reindexDoc: (id: string) => call<KnowledgeDoc>(`/api/knowledge/${id}/reindex`, { method: "POST" }), // admin only
+  deleteDoc: (id: string) => call<void>(`/api/knowledge/${id}`, { method: "DELETE" }),
+  /** De-identified text exactly as RAG Engine received it. */
+  previewDoc: async (id: string) => {
+    const res = await fetch(`/api/knowledge/${id}/preview`, { headers: { Authorization: `Bearer ${await idToken()}` } });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.text();
+  },
   audit: (q: AuditQuery, cursor?: string | null, limit = 25) => call<AuditPage>(`/api/audit?${auditQs(q, { limit: String(limit), cursor: cursor ?? "" })}`),
   auditSummary: () => call<AuditSummary>("/api/audit/summary"),
   auditCsv: (q: AuditQuery) => blob(`/api/audit/export.csv?${auditQs(q)}`),

@@ -34,15 +34,18 @@ CATEGORY = {
     "agent.run": "inference", "agent.approve": "inference", "agent.reject": "inference",
     "connector.invoke": "connector", "connector.test": "connector",
     "agent.create": "build", "agent.update": "build", "agent.publish": "build", "agent.unpublish": "build",
-    "agent.delete": "build", "knowledge.upload": "build", "knowledge.delete": "build", "knowledge.error": "build",
+    "agent.publish_request": "build", "agent.publish_withdraw": "build", "agent.publish_approve": "build",
+    "agent.publish_reject": "build",
+    "agent.delete": "build", "knowledge.upload": "build", "knowledge.delete": "build", "knowledge.error": "build", "knowledge.reindex": "build", "knowledge.replace": "build",
+    "knowledge.update": "build",
     # Credentials live in Secret Manager behind connector writes; exports take data out of the platform.
     "connector.create": "access", "connector.update": "access", "connector.delete": "access",
     "monitoring.export": "access", "audit.export": "access",
 }
 CATEGORIES = {"inference", "connector", "build", "access", "other"}
 SEVERITIES = {"info", "success", "warning"}
-_WARN_ACTIONS = {"knowledge.error", "agent.reject"}
-_SUCCESS_ACTIONS = {"agent.publish", "agent.approve"}
+_WARN_ACTIONS = {"knowledge.error", "agent.reject", "agent.publish_reject"}
+_SUCCESS_ACTIONS = {"agent.publish", "agent.approve", "agent.publish_approve"}
 _SYSTEM_TARGET = {"monitoring.export": "監控成本報表", "audit.export": "稽核報表"}
 
 
@@ -91,6 +94,8 @@ def _entry(doc_id: str, r: dict, lk: _Lookups) -> AuditEntry:
         kind, tid, label = "connector", connector_id, conn.get("label") or details.get("label") or connector_id
     elif agent_id:
         kind, tid, label = "agent", agent_id, agent_label
+    elif action.startswith("knowledge.") and details.get("doc_id"):
+        kind, tid, label = "document", str(details["doc_id"]), details.get("file") or details["doc_id"]
     elif action in _SYSTEM_TARGET:
         kind, label = "system", _SYSTEM_TARGET[action]
     return AuditEntry(id=doc_id, actor=r.get("actor", ""), actor_email=r.get("actor_email", ""), action=action,

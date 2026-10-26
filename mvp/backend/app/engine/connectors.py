@@ -16,7 +16,6 @@ from typing import Any
 
 import httpx
 
-from ..config import settings
 from . import deid
 
 TIMEOUT = 30.0
@@ -332,7 +331,7 @@ def invoke(type_: str, config: dict, secrets: dict, action: str, args: dict, *, 
     spec = TYPES[type_]
     if not spec["available"]:
         raise RuntimeError(spec["coming"])
-    if redact_pii and settings().deid_enabled:
+    if redact_pii:
         args = {k: deid.deidentify(v) if isinstance(v, str) else v for k, v in args.items()}
     if type_ == "mcp":
         c = _mcp(config, secrets)

@@ -49,3 +49,15 @@ export const fmtTime = (iso?: string | null) => {
 export const fmtBytes = (n: number) => (n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n > 1e3 ? `${(n / 1e3).toFixed(0)} KB` : `${n} B`);
 
 export const CATEGORY_ICON: Record<string, string> = { clinical: "cardiology", admin: "campaign", consultation: "diversity_3" };
+
+export const Modal = ({ title, onClose, children, wide = false }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) => (
+  <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4" onClick={onClose}>
+    <div className={`card flex max-h-[85vh] w-full flex-col ${wide ? "max-w-4xl" : "max-w-lg"}`} onClick={(e) => e.stopPropagation()}>
+      <div className="flex items-center justify-between border-b border-hairline px-5 py-3">
+        <p className="font-bold">{title}</p>
+        <button className="btn-ghost px-1" onClick={onClose} aria-label="關閉"><Icon name="close" /></button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto px-5 py-4">{children}</div>
+    </div>
+  </div>
+);

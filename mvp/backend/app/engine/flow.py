@@ -4,8 +4,9 @@ A canvas is a DAG of node types. We walk it from the `input` node following edge
 
   input             -> the user message (already de-identified) becomes {{input}}
   his_emr           -> data: {query}      ; STUB until the FHIR gateway exists; returns a marker
-  pii_mask          -> re-runs Sensitive Data Protection on {{last}} (ingress already did the message)
-  knowledge         -> data: {query?, top_k?} ; retrieves chunks from the agent's RAG corpus -> {{<id>}}
+  pii_mask          -> DEPRECATED no-op kept so older canvases still run; the platform de-identifies
+                       every message, knowledge file and retrieved chunk itself
+  knowledge         -> data: {query?, top_k?} ; retrieves chunks from the agent's attached library documents -> {{<id>}} (de-identified)
   llm               -> one LiteLLM call; data: {prompt, group?} ; prompt may use {{input}}, {{last}}, {{<nodeId>}}
   condition         -> data: {question} ; an LLM yes/no decides which outgoing edge (sourceHandle "true"/"false")
   tool              -> data: {connector_id, action, args{}} ; runs one connector action (engine.connectors)
@@ -15,6 +16,7 @@ A canvas is a DAG of node types. We walk it from the `input` node following edge
 
 Routing: the agent's RoutingPolicy picks the model group per llm step unless the node pins one.
 `sovereign_only` forces the on-prem-only group and never falls back (LiteLLM has no cloud member).
+See pick_group for the full order; condition nodes route the same way as llm nodes.
 
 Knowledge convention: when a knowledge node precedes an llm node, the llm prompt can reference
 {{<knowledgeNodeId>}}; if it does not, the retrieved chunks are appended to the system prompt so a
@@ -48,15 +50,28 @@ def _render(template: str, ctx: dict[str, str]) -> str:
     return _VAR.sub(lambda m: ctx.get(m.group(1), ""), template)
 
 
-def pick_group(agent: AgentIn, node: FlowNode, text: str) -> str:
-    """Routing policy: node override > sovereign flag > keyword heuristic > agent default."""
+COST_TIER = {"budget": 0, "fast": 1, "reasoning": 2}  # sovereign is a data-residency choice, not a cost tier
+
+
+def pick_group(agent: AgentIn, node: FlowNode, user_text: str) -> tuple[str, str]:
+    """Model group for one llm / structured_output / condition step, plus a note for the trace.
+
+    1. sovereign_only: every step on-prem, nothing overrides it.
+    2. the node's own group, else
+    3. reasoning if the USER's message (not the rendered prompt, which may carry retrieved text)
+       contains a reasoning keyword, else
+    4. the agent's default group (model_group).
+    Then the cost cap is a ceiling: anything above max_cost_tier is lowered to it.
+    """
     if agent.routing.sovereign_only:
-        return "sovereign"
-    if node.data.get("group"):
-        return str(node.data["group"])
-    if any(k.lower() in text.lower() for k in agent.routing.reasoning_keywords) and agent.routing.max_cost_tier == "reasoning":
-        return "reasoning"
-    return agent.model_group
+        return "sovereign", ""
+    text = user_text.lower()
+    want = str(node.data.get("group") or "") or (
+        "reasoning" if any(k.lower() in text for k in agent.routing.reasoning_keywords) else agent.model_group)
+    cap = agent.routing.max_cost_tier
+    if want in COST_TIER and COST_TIER[want] > COST_TIER[cap]:
+        return cap, f"{want} 超過成本上限，改用 {cap}"
+    return want, ""
 
 
 def _default_flow() -> Flow:
@@ -143,7 +158,7 @@ def _grounding_block(chunks: list[dict]) -> str:
 
 
 def run_flow(agent: AgentIn, *, agent_id: str, user_id: str, user_message: str,
-             history: list[dict], rag_corpus: str | None = None, resume: dict | None = None) -> RunResult:
+             history: list[dict], rag_files: list[str] | None = None, resume: dict | None = None) -> RunResult:
     """Walk the flow. `resume` = the `pending` dict a previous run returned at an approval node
     ({node_id, ctx, grounding}); execution continues from the edge after that node with the saved ctx."""
     flow = agent.flow if agent.flow.nodes else _default_flow()
@@ -197,22 +212,23 @@ def run_flow(agent: AgentIn, *, agent_id: str, user_id: str, user_message: str,
             ctx[node.id] = ctx["last"] = result
             res.trace.append(StepTrace(node_id=node.id, type="his_emr", summary="HIS/EMR 閘道未啟用（stub）", ms=ms(t0)))
 
-        elif node.type == "pii_mask":
-            masked = deid.deidentify(ctx["last"])
-            ctx[node.id] = ctx["last"] = masked
-            res.trace.append(StepTrace(node_id=node.id, type="pii_mask",
-                                       summary="已去識別化" if s.deid_enabled else "DEID_ENABLED=false，原文通過", ms=ms(t0)))
+        elif node.type == "pii_mask":  # deprecated: de-identification is a platform guarantee, not a node
+            ctx[node.id] = ctx["last"]
+            res.trace.append(StepTrace(node_id=node.id, type="pii_mask", summary="已停用：平台已自動去識別化（可刪除此節點）", ms=ms(t0)))
 
         elif node.type == "knowledge":
-            if not rag_corpus:
+            if not rag_files:
                 ctx[node.id] = ""
-                res.trace.append(StepTrace(node_id=node.id, type="knowledge", summary="此 Agent 尚未上傳知識文件", ms=ms(t0)))
+                res.trace.append(StepTrace(node_id=node.id, type="knowledge", summary="此 Agent 尚未掛載知識文件", ms=ms(t0)))
             else:
                 from . import rag  # lazy: only agents with knowledge pay the import cost
 
                 query = _render(str(node.data.get("query") or "{{input}}"), ctx)
                 top_k = int(node.data.get("top_k") or s.rag_top_k)
-                chunks = rag.retrieve(rag_corpus, query, top_k=top_k)
+                chunks = rag.retrieve(rag.hospital_corpus(), rag_files, query, top_k=top_k)
+                # Safety net: files indexed before upload de-id (or with it off) may still hold PHI.
+                for c, masked in zip(chunks, deid.deidentify_many([c["text"] for c in chunks]), strict=True):
+                    c["text"] = masked
                 grounding.extend(chunks)
                 ctx[node.id] = _grounding_block(chunks)
                 seen: set[tuple[str, str]] = set()
@@ -222,7 +238,7 @@ def run_flow(agent: AgentIn, *, agent_id: str, user_id: str, user_message: str,
                         seen.add(key)
                         res.citations.append(Citation(source=c["source"], uri=c["uri"], score=c["score"], text=c["text"][:300]))
                 res.trace.append(StepTrace(node_id=node.id, type="knowledge",
-                                           summary=f"檢索 {len(chunks)} 段落（top_k={top_k}）", ms=ms(t0)))
+                                           summary=f"檢索 {len(chunks)} 段落（top_k={top_k}），已去識別化", ms=ms(t0)))
 
         elif node.type in ("llm", "structured_output"):
             structured = node.type == "structured_output"
@@ -236,7 +252,7 @@ def run_flow(agent: AgentIn, *, agent_id: str, user_id: str, user_message: str,
             if structured:
                 schema = str(node.data.get("schema") or "{}")
                 system = f"{system}\n\n只輸出符合下列 JSON Schema 的 JSON 物件，不要加任何說明文字：\n{schema}"
-            group = pick_group(agent, node, prompt)
+            group, note = pick_group(agent, node, ctx["input"])
             c = _complete(agent, agent_id, user_id, group, system=system,
                           messages=[*history, {"role": "user", "content": prompt}],
                           temperature=agent.temperature, top_p=agent.top_p, json_mode=structured)
@@ -248,17 +264,20 @@ def run_flow(agent: AgentIn, *, agent_id: str, user_id: str, user_message: str,
                 except json.JSONDecodeError:
                     res.trace.append(StepTrace(node_id=node.id, type="structured_output", summary="模型輸出非合法 JSON，原文通過"))
             ctx[node.id] = ctx["last"] = reply
-            res.trace.append(StepTrace(node_id=node.id, type=node.type, model=c.model, group=group, summary=f"{len(reply)} 字",
+            res.trace.append(StepTrace(node_id=node.id, type=node.type, model=c.model, group=group,
+                                       summary=f"{len(reply)} 字" + (f"（{note}）" if note else ""),
                                        ms=ms(t0), prompt_tokens=c.prompt_tokens, completion_tokens=c.completion_tokens,
                                        cost_usd=c.cost_usd))
 
         elif node.type == "condition":
             question = _render(str(node.data.get("question") or "Is the request urgent?"), ctx)
-            c = _complete(agent, agent_id, user_id, "fast", system="Answer strictly YES or NO.",
+            # Same routing as llm steps (it used to be hard-wired to "fast", bypassing sovereign_only).
+            group, note = pick_group(agent, node, ctx["input"])
+            c = _complete(agent, agent_id, user_id, group, system="Answer strictly YES or NO.",
                           messages=[{"role": "user", "content": f"{question}\n\nContext:\n{ctx['last']}"}], temperature=0)
             nxt_handle = "true" if c.text.strip().upper().startswith("Y") else "false"
-            res.trace.append(StepTrace(node_id=node.id, type="condition", model=c.model, group="fast",
-                                       summary=f"{question} -> {nxt_handle}", ms=ms(t0), prompt_tokens=c.prompt_tokens,
+            res.trace.append(StepTrace(node_id=node.id, type="condition", model=c.model, group=group,
+                                       summary=f"{question} -> {nxt_handle}" + (f"（{note}）" if note else ""), ms=ms(t0), prompt_tokens=c.prompt_tokens,
                                        completion_tokens=c.completion_tokens, cost_usd=c.cost_usd))
 
         elif node.type == "tool":

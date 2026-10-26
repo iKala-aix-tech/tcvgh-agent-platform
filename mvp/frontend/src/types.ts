@@ -1,15 +1,22 @@
 // Mirrors backend/app/schemas.py. Keep the two in sync.
 export type ModelGroup = "fast" | "reasoning" | "budget" | "sovereign";
 export type NodeType =
+  // pii_mask is deprecated (no-op, kept so older canvases load): the platform de-identifies everything itself.
   | "input" | "his_emr" | "pii_mask" | "knowledge" | "llm" | "condition" | "tool" | "approval" | "structured_output" | "output";
 export type AgentCategory = "clinical" | "admin" | "consultation";
 
-export const MODEL_GROUPS: { id: ModelGroup; label: string; hint: string }[] = [
-  { id: "fast", label: "fast · Gemini 3 Flash", hint: "Gemini 3 Flash → gpt-oss-20b (on-prem) → Claude Haiku 4.5" },
-  { id: "reasoning", label: "reasoning · Gemini 3.1 Pro", hint: "Gemini 3.1 Pro → Claude Sonnet 4.6 → GPT-5.4 → gpt-oss-120b" },
-  { id: "budget", label: "budget · Gemma 4 (on-prem)", hint: "Gemma 4 26B (on-prem) → Nova 2 Lite → Claude Haiku 4.5" },
-  { id: "sovereign", label: "sovereign · 院內模型", hint: "gpt-oss-120b → Gemma 4; never falls back to cloud" },
+/** Selectable LiteLLM groups. What each one runs comes live from /api/models (see modelGroups.ts), never hard-coded here. */
+export const MODEL_GROUPS: { id: ModelGroup; label: string }[] = [
+  { id: "fast", label: "fast · 快速" }, { id: "reasoning", label: "reasoning · 深度推理" },
+  { id: "budget", label: "budget · 低成本" }, { id: "sovereign", label: "sovereign · 院內模型（不回退雲端）" },
 ];
+/** Live routing table from LiteLLM: group members and fallback chain. */
+export interface ModelGroupInfo { id: ModelGroup; models: string[]; configured: boolean; fallbacks: { name: string; models: string[] }[] }
+
+// Mirrors pick_group in backend/app/engine/flow.py: the cost cap is a ceiling; sovereign is not a cost tier.
+const COST_TIER: Record<string, number> = { budget: 0, fast: 1, reasoning: 2 };
+export const clampToCap = (group: ModelGroup, cap: RoutingPolicy["max_cost_tier"]): ModelGroup =>
+  group in COST_TIER && COST_TIER[group] > COST_TIER[cap] ? cap : group;
 
 // Fixed department list; mirrors DEPARTMENTS in backend/app/schemas.py.
 export const DEPARTMENTS = [
@@ -23,21 +30,23 @@ export const CATEGORIES: { id: AgentCategory; label: string }[] = [
   { id: "consultation", label: "跨科會診 (Consultation)" },
 ];
 
-export const NODE_KINDS: { type: NodeType; label: string; icon: string; hint: string }[] = [
+/** `retired` kinds are hidden from the palette but still render and edit on older canvases. */
+export const NODE_KINDS: { type: NodeType; label: string; icon: string; hint: string; retired?: boolean }[] = [
   { type: "his_emr", label: "HIS/EMR 輸入", icon: "input", hint: "院內 FHIR 閘道（尚未串接，stub）" },
   { type: "knowledge", label: "知識檢索 (RAG)", icon: "manage_search", hint: "從此 Agent 的知識庫檢索段落" },
   { type: "llm", label: "醫療大模型", icon: "psychology", hint: "一次模型推論" },
-  { type: "pii_mask", label: "敏感資安遮蔽", icon: "shield", hint: "Sensitive Data Protection 去識別化" },
   { type: "condition", label: "條件判斷", icon: "alt_route", hint: "LLM 回答 YES/NO 決定分支" },
   { type: "structured_output", label: "結構化輸出", icon: "data_object", hint: "依 JSON Schema 輸出" },
   { type: "tool", label: "連接器動作", icon: "extension", hint: "Google Workspace（stub）" },
-  { type: "approval", label: "人工核准", icon: "how_to_reg", hint: "暫停等待主治醫師審核" },
+  // Retired 2026-10-26: publish now needs admin approval. Existing nodes still pause each run for the owner.
+  { type: "approval", label: "人工核准", icon: "how_to_reg", hint: "暫停等待主治醫師審核", retired: true },
+  // Retired 2026-10-26: the platform de-identifies everything itself; existing nodes are a no-op.
+  { type: "pii_mask", label: "敏感資安遮蔽（已停用）", icon: "shield", hint: "平台已自動去識別化", retired: true },
   { type: "output", label: "回覆", icon: "output", hint: "最終回覆模板" },
 ];
 
 export interface RoutingPolicy {
-  default_group: ModelGroup;
-  reasoning_keywords: string[];
+  reasoning_keywords: string[]; // matched against the user's message only
   sovereign_only: boolean;
   max_cost_tier: "budget" | "fast" | "reasoning";
 }
@@ -79,6 +88,7 @@ export interface AgentIn {
   connectors: Connector[];
   flow: Flow;
   test_cases: TestCase[];
+  knowledge_doc_ids: string[]; // attached library documents
 }
 export interface AgentOut extends AgentIn {
   id: string;
@@ -91,21 +101,51 @@ export interface AgentOut extends AgentIn {
   created_at?: string | null;
   updated_at?: string | null;
   published_at?: string | null;
+  review?: ReviewState | null;
+  approved_by_email?: string;
+  approved_at?: string | null;
+}
+/** Publish request (builders apply, an admin approves). Separate from `status`: v1 stays live while v2 is in review. */
+export interface ReviewState {
+  state: "pending" | "rejected";
+  version: number;
+  requested_by_email: string;
+  requested_at?: string | null;
+  reason: string;
+  decided_by_email: string;
+  decided_at?: string | null;
+}
+export interface SandboxActivity {
+  runs_today: number;
+  avg_latency_ms: number;
+  pending_reviews: number;
+  by_agent: Record<string, { runs: number; avg_latency_ms: number }>;
+  capped: boolean;
 }
 
-export interface KnowledgeFile {
+// Hospital knowledge library (院內指引與醫學知識庫). Mirrors DocCategory in backend/app/schemas.py.
+export type DocCategory = "guideline" | "pharmacy" | "nursing_sop" | "regulation" | "other";
+export const DOC_CATEGORIES: { id: DocCategory; label: string }[] = [
+  { id: "guideline", label: "臨床診療常規指引" }, { id: "pharmacy", label: "藥事與抗生素專冊" },
+  { id: "nursing_sop", label: "護理標準作業 SOP" }, { id: "regulation", label: "TFDA / 衛福部法規" }, { id: "other", label: "其他" },
+];
+/** One library document. Only its de-identified text is indexed; the original stays in the CMEK bucket. */
+export interface KnowledgeDoc {
   id: string;
-  agent_id: string;
-  agent_name: string;
   name: string;
+  category: DocCategory;
+  department: string;
   content_type: string;
   size_bytes: number;
-  gcs_uri: string;
-  rag_file?: string | null;
+  chars: number; // length of the de-identified text that was indexed
+  version: number;
   status: "indexing" | "indexed" | "error";
   error: string;
   uploaded_by: string;
+  uploaded_uid: string;
   created_at?: string | null;
+  updated_at?: string | null;
+  agents: { id: string; name: string }[];
 }
 
 export interface StepTrace {
@@ -141,7 +181,7 @@ export interface AuditEntry {
   at?: string | null;
   category: AuditCategory;
   severity: AuditSeverity;
-  target_kind: "agent" | "connector" | "system" | "";
+  target_kind: "agent" | "connector" | "document" | "system" | "";
   target_id: string;
   target_label: string;
   agent_label: string;
@@ -166,7 +206,6 @@ export interface HubStats {
   hospital_published: number;
   runs_today: number;
   knowledge_files: number;
-  deid_enabled: boolean;
 }
 
 export interface Me { uid: string; email: string; name: string; role: string }
@@ -193,7 +232,7 @@ export interface MonitoringQuery { from: string; to: string; department: string 
 export const toAgentIn = (a: AgentOut): AgentIn => ({
   name: a.name, description: a.description, instructions: a.instructions, category: a.category,
   department: a.department, code: a.code, model_group: a.model_group, temperature: a.temperature, top_p: a.top_p,
-  routing: a.routing, connectors: a.connectors, flow: a.flow, test_cases: a.test_cases,
+  routing: a.routing, connectors: a.connectors, flow: a.flow, test_cases: a.test_cases, knowledge_doc_ids: a.knowledge_doc_ids ?? [],
 });
 
 export const emptyAgent = (): AgentIn => ({
@@ -206,7 +245,7 @@ export const emptyAgent = (): AgentIn => ({
   model_group: "fast",
   temperature: 0.15,
   top_p: 0.85,
-  routing: { default_group: "fast", reasoning_keywords: ["分析", "比較", "規劃", "為什麼"], sovereign_only: false, max_cost_tier: "reasoning" },
+  routing: { reasoning_keywords: ["分析", "比較", "規劃", "為什麼"], sovereign_only: false, max_cost_tier: "reasoning" },
   connectors: [],
   flow: {
     nodes: [
@@ -222,6 +261,7 @@ export const emptyAgent = (): AgentIn => ({
     ],
   },
   test_cases: [],
+  knowledge_doc_ids: [],
 });
 
 // ---- connectors (shared, hospital-wide). Specs come from GET /api/connectors/types.

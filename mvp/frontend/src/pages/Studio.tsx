@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
-import { CATEGORIES, DEPARTMENTS, MODEL_GROUPS, emptyAgent, toAgentIn, type AgentOut, type Flow, type FlowNode, type ModelGroup } from "../types";
+import { CATEGORIES, DEPARTMENTS, MODEL_GROUPS, clampToCap, toAgentIn, type AgentOut, type Flow, type FlowNode, type ModelGroup } from "../types";
 import Canvas from "../components/Canvas";
 import NodeInspector from "../components/NodeInspector";
 import KnowledgePanel from "../components/KnowledgePanel";
-import { Empty, ErrorBox, Field, Icon, Spinner, StatusPill } from "../components/ui";
+import { ErrorBox, Field, Icon, Spinner, StatusPill } from "../components/ui";
 import { currentName, currentUid } from "../mock";
+import { describeGroup, useModelGroups } from "../modelGroups";
 
 const estTokens = (s: string) => Math.ceil([...s].reduce((n, ch) => n + (ch.charCodeAt(0) > 255 ? 1.3 : 0.25), 0));
 
@@ -20,14 +21,12 @@ export default function Studio() {
   const [status, setStatus] = useState("");
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
-  const [knowledgeCount, setKnowledgeCount] = useState(0);
-  const [list, setList] = useState<AgentOut[]>([]);
   const timer = useRef<number>();
 
   useEffect(() => {
-    if (!id) { api.listAgents().then((a) => setList(a.filter((x) => x.owner_uid === currentUid()))); return; }
+    if (!id) return;
     setAgent(null); setSelected(null); setDirty(false);
-    api.getAgent(id).then((a) => { setAgent(a); setKnowledgeCount(a.knowledge_count); }).catch((e) => setErr(String(e)));
+    api.getAgent(id).then(setAgent).catch((e) => setErr(String(e)));
   }, [id]);
 
   // Debounced static validation (backend is the source of truth for the rules).
@@ -57,31 +56,22 @@ export default function Studio() {
     await api.deleteAgent(agent.id); nav("/hub");
   };
 
+  const groups = useModelGroups();
+  /** The group a model step really runs with (same order as the backend's pick_group, minus the keyword upgrade). */
+  const effective = useCallback((pinned?: ModelGroup) => {
+    if (!agent) return "fast" as ModelGroup;
+    return agent.routing.sovereign_only ? "sovereign" : clampToCap(pinned || agent.model_group, agent.routing.max_cost_tier);
+  }, [agent]);
   const stats = useMemo(() => {
     if (!agent) return null;
-    const llm = agent.flow.nodes.filter((n) => n.type === "llm" || n.type === "structured_output" || n.type === "condition").length;
+    const steps = agent.flow.nodes.filter((n) => n.type === "llm" || n.type === "structured_output" || n.type === "condition")
+      .map((n) => effective(n.data.group as ModelGroup | undefined));
     const kb = agent.flow.nodes.filter((n) => n.type === "knowledge").length;
-    const ms = 250 + llm * (agent.model_group === "reasoning" ? 2200 : 900) + kb * 350;
-    const usd = llm * (agent.model_group === "reasoning" ? 0.004 : 0.0006) + kb * 0.0002;
+    const ms = 250 + steps.reduce((t, g) => t + (g === "reasoning" ? 2200 : 900), 0) + kb * 350;
+    const usd = steps.reduce((t, g) => t + (g === "reasoning" ? 0.004 : 0.0006), 0) + kb * 0.0002;
     return { nodes: agent.flow.nodes.length, edges: agent.flow.edges.length, ms, usd };
-  }, [agent]);
+  }, [agent, effective]);
 
-  if (!id) {
-    return (
-      <div className="mx-auto max-w-5xl px-6 py-6">
-        <h1 className="text-2xl font-bold">Agent Studio 工作流建置</h1>
-        <p className="mt-1 text-sm text-on-surface-variant">選擇一個您負責的 Agent 進入編輯，或從 Hub 建立新的。</p>
-        <div className="mt-5 grid gap-3 md:grid-cols-2">
-          {list.map((a) => (
-            <button key={a.id} className="card flex items-center gap-3 px-4 py-3 text-left hover:shadow-float" onClick={() => nav(`/studio/${a.id}`)}>
-              <Icon name="account_tree" className="text-primary" /><span className="flex-1"><span className="block font-semibold">{a.name}</span><span className="block text-xs text-on-surface-variant">{a.flow.nodes.length} 節點 · {a.knowledge_count} 份知識</span></span><StatusPill status={a.status} version={a.version} />
-            </button>
-          ))}
-        </div>
-        {list.length === 0 && <div className="mt-5"><Empty icon="account_tree" title="您還沒有 Agent" action={<button className="btn-primary mt-2" onClick={async () => nav(`/studio/${(await api.createAgent(emptyAgent())).id}`)}>＋ 建立新 Agent</button>} /></div>}
-      </div>
-    );
-  }
   if (!agent) return <div className="grid h-full place-items-center">{err ? <ErrorBox msg={err} /> : <Spinner />}</div>;
 
   const tokens = estTokens(agent.instructions);
@@ -115,10 +105,14 @@ export default function Studio() {
             </div>
             <Field label="負責科別 / 單位" hint="監控與成本儀表板依此分科統計"><select value={agent.department} onChange={(e) => patch({ department: e.target.value })} disabled={!editable}><option value="">（未指定）</option>{DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}</select></Field>
             <Field label="臨床業務說明 (Description)"><textarea rows={3} value={agent.description} onChange={(e) => patch({ description: e.target.value })} disabled={!editable} /></Field>
-            <Field label="基底推論模型 (Vertex AI Node)" hint={MODEL_GROUPS.find((g) => g.id === agent.model_group)?.hint} right={<span className="chip"><Icon name="verified" className="text-[12px]" />經 LiteLLM 路由</span>}>
-              <select value={agent.model_group} onChange={(e) => patch({ model_group: e.target.value as ModelGroup, routing: { ...agent.routing, default_group: e.target.value as ModelGroup } })} disabled={!editable}>
+            <Field label="預設模型群組（LiteLLM 路由）" hint={`未在節點指定群組的模型步驟（含條件判斷）使用此群組。${describeGroup(groups, agent.model_group)}`}>
+              <select value={agent.model_group} onChange={(e) => patch({ model_group: e.target.value as ModelGroup })} disabled={!editable}>
                 {MODEL_GROUPS.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}</select>
             </Field>
+            {effective() !== agent.model_group && (
+              <p className="mt-1 flex items-start gap-1 text-[11px] text-warning"><Icon name="info" className="text-[14px]" />
+                目前實際使用 {effective()}：{agent.routing.sovereign_only ? "已勾選「僅限院內模型」" : `高於成本上限 ${agent.routing.max_cost_tier}`}。</p>
+            )}
             <div className="mt-3 rounded-lg bg-surface-container-low p-3">
               <div className="flex items-center justify-between text-xs"><span className="font-semibold">隨機發散性 (Temperature)</span><span className="font-mono text-primary">{agent.temperature.toFixed(2)}</span></div>
               <input type="range" min={0} max={1} step={0.05} value={agent.temperature} onChange={(e) => patch({ temperature: Number(e.target.value) })} disabled={!editable} className="mt-1 accent-primary" />
@@ -128,8 +122,8 @@ export default function Studio() {
             <details className="mt-3 text-xs">
               <summary className="cursor-pointer font-semibold text-on-surface-variant">模型路由與成本上限</summary>
               <label className="mt-2 flex items-center gap-2"><input type="checkbox" className="w-auto" checked={agent.routing.sovereign_only} onChange={(e) => patch({ routing: { ...agent.routing, sovereign_only: e.target.checked } })} disabled={!editable} />僅限院內模型（sovereign，不回退雲端）</label>
-              <Field label="升級到 reasoning 的關鍵字"><input value={agent.routing.reasoning_keywords.join(", ")} onChange={(e) => patch({ routing: { ...agent.routing, reasoning_keywords: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) } })} disabled={!editable} /></Field>
-              <Field label="成本上限"><select value={agent.routing.max_cost_tier} onChange={(e) => patch({ routing: { ...agent.routing, max_cost_tier: e.target.value as AgentOut["routing"]["max_cost_tier"] } })} disabled={!editable}><option value="budget">budget</option><option value="fast">fast</option><option value="reasoning">reasoning</option></select></Field>
+              <Field label="升級到 reasoning 的關鍵字" hint="只比對使用者的提問（不含檢索內容或前一步輸出）；節點已指定群組時不套用。"><input value={agent.routing.reasoning_keywords.join(", ")} onChange={(e) => patch({ routing: { ...agent.routing, reasoning_keywords: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) } })} disabled={!editable} /></Field>
+              <Field label="成本上限" hint="上限，不只是門檻：預設群組、關鍵字升級與節點指定的群組若高於此等級，執行時一律降為此等級。sovereign 不受影響。"><select value={agent.routing.max_cost_tier} onChange={(e) => patch({ routing: { ...agent.routing, max_cost_tier: e.target.value as AgentOut["routing"]["max_cost_tier"] } })} disabled={!editable}><option value="budget">budget</option><option value="fast">fast</option><option value="reasoning">reasoning</option></select></Field>
             </details>
           </div>
 
@@ -139,7 +133,8 @@ export default function Studio() {
             <textarea rows={12} className="mt-2 font-mono text-xs leading-5" value={agent.instructions} onChange={(e) => patch({ instructions: e.target.value })} disabled={!editable} />
           </div>
 
-          <KnowledgePanel agentId={agent.id} editable={editable} onCount={(n) => { setKnowledgeCount(n); setAgent((a) => (a ? { ...a, knowledge_count: n } : a)); }} />
+          <KnowledgePanel docIds={agent.knowledge_doc_ids ?? []} editable={editable} department={agent.department}
+            onChange={(ids) => patch({ knowledge_doc_ids: ids, knowledge_count: ids.length })} />
 
           <details className="card p-4 text-xs">
             <summary className="cursor-pointer font-semibold">沙盒預載個案（{agent.test_cases.length}）</summary>
@@ -165,7 +160,7 @@ export default function Studio() {
             <Canvas flow={agent.flow} onChange={setFlow} onSelect={setSelected} selectedId={selected?.id} />
           </div>
           {selected && editable && (
-            <NodeInspector node={agent.flow.nodes.find((n) => n.id === selected.id) ?? selected} knowledgeCount={knowledgeCount}
+            <NodeInspector node={agent.flow.nodes.find((n) => n.id === selected.id) ?? selected} knowledgeCount={agent.knowledge_doc_ids?.length ?? 0} effectiveGroup={effective} defaultGroup={agent.model_group}
               onChange={(n) => { setFlow({ ...agent.flow, nodes: agent.flow.nodes.map((x) => (x.id === n.id ? n : x)) }); setSelected(n); }}
               onDelete={() => { setFlow({ nodes: agent.flow.nodes.filter((x) => x.id !== selected.id), edges: agent.flow.edges.filter((e) => e.source !== selected.id && e.target !== selected.id) }); setSelected(null); }} />
           )}

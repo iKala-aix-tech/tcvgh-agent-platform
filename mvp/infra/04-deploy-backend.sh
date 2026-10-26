@@ -12,6 +12,7 @@ LITELLM_URL="$(gcloud run services describe "$LITELLM_SERVICE" --region "$REGION
 # Private Google Access on the default subnet so VPC-egress traffic can still hit *.googleapis.com
 gcloud compute networks subnets update default --region "$REGION" --enable-private-ip-google-access >/dev/null
 
+# --set-env-vars "^|^...": | is the separator, so comma-separated values (ALLOWED_DOMAINS, ADMIN_EMAILS) survive.
 gcloud run deploy "$BACKEND_SERVICE" \
   --source . \
   --region "$REGION" \
@@ -19,7 +20,7 @@ gcloud run deploy "$BACKEND_SERVICE" \
   --allow-unauthenticated \
   --network default --subnet default --vpc-egress all-traffic \
   --cpu 1 --memory 2Gi --min-instances 0 --max-instances 5 --concurrency 40 --timeout 300 \
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},REGION=${REGION},LITELLM_BASE_URL=${LITELLM_URL},FIRESTORE_DATABASE=${FIRESTORE_DATABASE},UPLOAD_BUCKET=${UPLOAD_BUCKET},ALLOWED_DOMAINS=${ALLOWED_DOMAINS},DEID_ENABLED=${DEID_ENABLED},RAG_ENABLED=${RAG_ENABLED},RAG_LOCATION=${RAG_LOCATION},RAG_EMBEDDING_MODEL=${RAG_EMBEDDING_MODEL},ADMIN_EMAILS=${ADMIN_EMAILS},MONTHLY_BUDGET_USD=${MONTHLY_BUDGET_USD},USD_TWD_RATE=${USD_TWD_RATE}" \
+  --set-env-vars "^|^GOOGLE_CLOUD_PROJECT=${PROJECT_ID}|REGION=${REGION}|LITELLM_BASE_URL=${LITELLM_URL}|FIRESTORE_DATABASE=${FIRESTORE_DATABASE}|UPLOAD_BUCKET=${UPLOAD_BUCKET}|ALLOWED_DOMAINS=${ALLOWED_DOMAINS}|DLP_INSPECT_TEMPLATE=${DLP_INSPECT_TEMPLATE}|RAG_ENABLED=${RAG_ENABLED}|RAG_LOCATION=${RAG_LOCATION}|RAG_EMBEDDING_MODEL=${RAG_EMBEDDING_MODEL}|ADMIN_EMAILS=${ADMIN_EMAILS}|MONTHLY_BUDGET_USD=${MONTHLY_BUDGET_USD}|USD_TWD_RATE=${USD_TWD_RATE}" \
   --set-secrets "LITELLM_API_KEY=litellm-master-key:latest"
 
 BACKEND_URL="$(gcloud run services describe "$BACKEND_SERVICE" --region "$REGION" --format='value(status.url)')"

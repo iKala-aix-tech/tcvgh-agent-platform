@@ -1,6 +1,6 @@
 /** In-memory API used when VITE_MOCK_API=1 (design review / demos without GCP). Same surface as ./api. */
 import { auth } from "./firebase";
-import { emptyAgent, type ActionSpec, type AgentIn, type AgentOut, type AgentUsageRow, type AuditCategory, type AuditEntry, type AuditPage, type AuditQuery, type AuditSeverity, type AuditSummary, type ConnectorIn, type ConnectorOut, type ConnectorStats, type ConnectorTypes, type Flow, type HubStats, type KnowledgeFile, type Me, type MonitoringQuery, type MonitoringSummary, type RunResponse, type TestResult, type UsageSort } from "./types";
+import { emptyAgent, type ActionSpec, type AgentIn, type AgentOut, type AgentUsageRow, type AuditCategory, type AuditEntry, type AuditPage, type AuditQuery, type AuditSeverity, type AuditSummary, type ConnectorIn, type ConnectorOut, type ConnectorStats, type ConnectorTypes, type Flow, type HubStats, type SandboxActivity, type KnowledgeDoc, type ModelGroupInfo, type Me, type MonitoringQuery, type MonitoringSummary, type RunResponse, type TestResult, type UsageSort } from "./types";
 import connectorTypes from "./connectorTypes.json";
 
 export const MOCK = import.meta.env.VITE_MOCK_API === "1";
@@ -11,32 +11,50 @@ export const currentName = () => (MOCK ? mockUser.displayName : auth.currentUser
 
 const ago = (h: number) => new Date(Date.now() - h * 3600e3).toISOString();
 const mk = (id: string, p: Partial<AgentOut>): AgentOut => ({
-  ...emptyAgent(), id, owner_uid: "u-lin", owner_email: mockUser.email, status: "draft", version: 0, knowledge_count: 0, updated_at: ago(2), ...p,
+  ...emptyAgent(), id, owner_uid: "u-lin", owner_email: mockUser.email, status: "draft", version: 0, updated_at: ago(2), ...p, knowledge_count: (p.knowledge_doc_ids ?? []).length,
 });
 let agents: AgentOut[] = [
-  mk("ag-cardio-094", { name: "心臟內科出院病歷智慧整理 Agent", department: "心臟血管中心", code: "CARD-801", status: "published", version: 3, knowledge_count: 2, model_group: "reasoning",
+  mk("ag-cardio-094", { name: "心臟內科出院病歷智慧整理 Agent", department: "心臟血管中心", code: "CARD-801", status: "published", version: 3, knowledge_doc_ids: ["d-acs", "d-lex"], model_group: "reasoning",
     description: "自動統整冠狀動脈攝影紀錄、心導管介入處置 (PCI) 數據與心臟超音波報告，標準化轉譯為中榮 ICD-10 出院摘要。", published_at: ago(5),
     test_cases: [{ title: "案例 1：急性心肌梗塞 (AMI) 術後第5天病歷", message: "請幫我整理病歷號 #8839201 的心導管手術紀錄與昨天的 Echo 報告，生成出院衛教重點。" }] }),
-  mk("ag-nur-104", { name: "門診衛教即時問答助手", department: "護理部", code: "NUR-104", status: "published", version: 1, category: "admin", owner_uid: "u-other", owner_email: "nurse@vghtc.gov.tw", updated_at: ago(4), knowledge_count: 1 }),
-  mk("ag-er-023", { name: "急診檢傷流病快速比對 Agent", department: "急診醫學部", code: "ER-023", status: "published", version: 2, owner_uid: "u-other", owner_email: "er@vghtc.gov.tw", updated_at: ago(20), knowledge_count: 3 }),
+  mk("ag-nur-104", { name: "門診衛教即時問答助手", department: "護理部", code: "NUR-104", status: "published", version: 1, category: "admin", owner_uid: "u-other", owner_email: "nurse@vghtc.gov.tw", updated_at: ago(4), knowledge_doc_ids: ["d-push"] }),
+  mk("ag-er-023", { name: "急診檢傷流病快速比對 Agent", department: "急診醫學部", code: "ER-023", status: "published", version: 2, owner_uid: "u-other", owner_email: "er@vghtc.gov.tw", updated_at: ago(20), knowledge_doc_ids: ["d-ttas", "d-acs", "d-abx"] }),
   mk("ag-rad-302", { name: "放射科影像報告結構化工具", department: "放射線部", code: "RAD-302", updated_at: ago(72) }),
-  mk("ag-endo-509", { name: "糖尿病共同照護追蹤助理", department: "新陳代謝科", code: "DM-509", status: "published", version: 1, category: "consultation", updated_at: ago(120), knowledge_count: 1 }),
-  mk("ag-icc-018", { name: "院內感染管制感控通報 Agent", department: "感染管制中心", code: "ICC-018", updated_at: ago(168) }),
+  mk("ag-endo-509", { name: "糖尿病共同照護追蹤助理", department: "新陳代謝科", code: "DM-509", status: "published", version: 1, category: "consultation", updated_at: ago(120), knowledge_doc_ids: ["d-dkd"] }),
+  mk("ag-icc-018", { name: "院內感染管制感控通報 Agent", department: "感染管制中心", code: "ICC-018", updated_at: ago(168),
+    review: { state: "rejected", version: 1, requested_by_email: mockUser.email, requested_at: ago(30), reason: "通報流程缺少感控護理師核准節點，請補上後再申請。", decided_by_email: "it-admin@vghtc.gov.tw", decided_at: ago(26) } }),
+  mk("ag-pharm-212", { name: "心衰竭用藥交互作用警示 Agent", department: "藥劑部", code: "PHA-212", owner_uid: "u-pha", owner_email: "pharm@vghtc.gov.tw", updated_at: ago(6), knowledge_doc_ids: ["d-abx", "d-dkd"],
+    description: "比對 ACEI / ARNI / MRA 併用與腎功能、血鉀數值，提示禁忌與劑量調整。",
+    review: { state: "pending", version: 1, requested_by_email: "pharm@vghtc.gov.tw", requested_at: ago(6), reason: "", decided_by_email: "", decided_at: null } }),
 ];
-let files: KnowledgeFile[] = [
-  { id: "k1", agent_id: "ag-cardio-094", agent_name: agents[0].name, name: "中榮病歷標準詞彙庫 v4.0.pdf", content_type: "application/pdf", size_bytes: 4.2e6, gcs_uri: "gs://x/k1", status: "indexed", error: "", uploaded_by: mockUser.email, created_at: ago(30) },
-  { id: "k2", agent_id: "ag-cardio-094", agent_name: agents[0].name, name: "心臟學會臨床指引 2024.pdf", content_type: "application/pdf", size_bytes: 8.4e6, gcs_uri: "gs://x/k2", status: "indexed", error: "", uploaded_by: mockUser.email, created_at: ago(40) },
-  { id: "k3", agent_id: "ag-er-023", agent_name: agents[2].name, name: "TTAS 檢傷標準手冊.pdf", content_type: "application/pdf", size_bytes: 2.1e6, gcs_uri: "gs://x/k3", status: "indexed", error: "", uploaded_by: "er@vghtc.gov.tw", created_at: ago(90) },
+agents = agents.map((a) => (a.status === "published" && !a.approved_by_email ? { ...a, approved_by_email: "it-admin@vghtc.gov.tw", approved_at: a.published_at ?? a.updated_at } : a));
+const D = (id: string, name: string, category: KnowledgeDoc["category"], department: string, mb: number, by: string, h: number, extra: Partial<KnowledgeDoc> = {}): KnowledgeDoc => ({
+  id, name, category, department, content_type: name.endsWith(".pdf") ? "application/pdf" : "text/plain", size_bytes: mb * 1e6, chars: Math.round(mb * 42000),
+  version: 1, status: "indexed", error: "", uploaded_by: by, uploaded_uid: by === mockUser.email ? mockUser.uid : "u-other", created_at: ago(h), updated_at: ago(h), agents: [], ...extra,
+});
+let docs: KnowledgeDoc[] = [
+  D("d-acs", "臺中榮總 2024 急性冠心症 (ACS) 臨床診斷與處方處置常規指引（第 7 版）.pdf", "guideline", "心臟血管中心", 6.4, mockUser.email, 30, { version: 7 }),
+  D("d-abx", "中榮重症與院內抗生素選用建議指引 (v2024.10).pdf", "pharmacy", "感染管制中心", 12.8, "pharm@vghtc.gov.tw", 50, { version: 2 }),
+  D("d-ttas", "衛福部 急診五級檢傷分類 (TTAS) 標準作業指引.pdf", "regulation", "急診醫學部", 4.2, "er@vghtc.gov.tw", 90),
+  D("d-lex", "放射診斷科 CT 與 MRI 判讀結構化語意字典.docx", "guideline", "放射線部", 3.1, mockUser.email, 120),
+  D("d-dkd", "糖尿病腎病變 (DKD) SGLT2i 與 GLP-1 RA 聯合用藥指引 (2024 專家共識).pdf", "pharmacy", "新陳代謝科", 5.8, mockUser.email, 20),
+  D("d-push", "護理部 加護病房壓瘡傷口照護與 PUSH 評分臨床操作指引.pdf", "nursing_sop", "護理部", 8.5, "nurse@vghtc.gov.tw", 10),
+  D("d-mdt", "全院多專科癌症診療團隊 (MDT) 晨會常規作業準則.md", "other", "", 1.2, "it-admin@vghtc.gov.tw", 4, { status: "error", error: "422 indexing failed: NoTextError: no extractable text (scanned / image-only file?)" }),
 ];
+/** Attachments are derived from agents, like the backend's _attachments(). */
+const withAgents = (d: KnowledgeDoc): KnowledgeDoc => ({ ...d, agents: agents.filter((a) => a.knowledge_doc_ids.includes(d.id)).map((a) => ({ id: a.id, name: a.name })) });
+const findDoc = (id: string) => { const d = docs.find((x) => x.id === id); if (!d) throw new Error("404 document not found"); return d; };
+const setDoc = (id: string, f: (d: KnowledgeDoc) => KnowledgeDoc) => { const d = f(findDoc(id)); docs = docs.map((x) => (x.id === id ? d : x)); return delay(withAgents(d), 600); };
 // ---- audit: deterministic synthetic trail over the last 7 days. Category / severity mirror backend/app/routers/audit.py.
 const AUDIT_CAT: Record<string, AuditCategory> = {
   "agent.run": "inference", "agent.approve": "inference", "agent.reject": "inference", "connector.invoke": "connector", "connector.test": "connector",
   "agent.create": "build", "agent.update": "build", "agent.publish": "build", "agent.unpublish": "build", "agent.delete": "build",
-  "knowledge.upload": "build", "knowledge.delete": "build", "knowledge.error": "build",
+  "agent.publish_request": "build", "agent.publish_withdraw": "build", "agent.publish_approve": "build", "agent.publish_reject": "build",
+  "knowledge.upload": "build", "knowledge.delete": "build", "knowledge.error": "build", "knowledge.reindex": "build",
   "connector.create": "access", "connector.update": "access", "connector.delete": "access", "monitoring.export": "access", "audit.export": "access",
 };
 const auditSeverity = (action: string, d: Record<string, unknown>): AuditSeverity =>
-  d.ok === false || action === "knowledge.error" || action === "agent.reject" ? "warning" : d.ok === true || action === "agent.publish" || action === "agent.approve" ? "success" : "info";
+  d.ok === false || action === "knowledge.error" || action === "agent.reject" || action === "agent.publish_reject" ? "warning" : d.ok === true || action === "agent.publish" || action === "agent.approve" || action === "agent.publish_approve" ? "success" : "info";
 const AGENT_META: Record<string, [string, string]> = {
   "ag-cardio-094": ["心臟內科出院病歷智慧整理 Agent", "心臟血管中心"], "ag-nur-104": ["門診衛教即時問答助手", "護理部"],
   "ag-er-023": ["急診檢傷流病快速比對 Agent", "急診醫學部"], "ag-rad-302": ["放射科影像報告結構化工具", "放射線部"],
@@ -192,17 +210,36 @@ const monitoringAgents = (q: MonitoringQuery, sort: UsageSort): AgentUsageRow[] 
 };
 
 const delay = <T,>(v: T, ms = 150) => new Promise<T>((r) => setTimeout(() => r(v), ms));
+const now = () => new Date().toISOString();
+const mockRole = () => new URLSearchParams(window.location.search).get("role") ?? "admin";
+const setAgent = (id: string, f: (a: AgentOut) => AgentOut) => { const a = f(find(id)); agents = agents.map((x) => (x.id === id ? a : x)); return delay(a); };
 const find = (id: string) => { const a = agents.find((x) => x.id === id); if (!a) throw new Error("404 agent not found"); return a; };
 
 export const mockApi = {
-  me: () => delay<Me>({ uid: mockUser.uid, email: mockUser.email, name: mockUser.displayName, role: "admin" }),
-  stats: () => delay<HubStats>({ my_agents: agents.filter((a) => a.owner_uid === "u-lin").length, my_published: 2, hospital_published: agents.filter((a) => a.status === "published").length, runs_today: 1840, knowledge_files: files.length, deid_enabled: false }),
+  // Same shape /api/models returns from the live LiteLLM proxy (checked 2026-10-26).
+  modelGroups: () => delay<{ groups: ModelGroupInfo[] }>({ groups: [
+    { id: "fast", models: ["gemini-3-flash-preview"], configured: true, fallbacks: [{ name: "gemini-2.5-flash", models: ["gemini-2.5-flash"] }] },
+    { id: "reasoning", models: ["gemini-3.1-pro-preview"], configured: true, fallbacks: [{ name: "fast", models: ["gemini-3-flash-preview"] }] },
+    { id: "budget", models: ["gemini-3-flash-preview"], configured: true, fallbacks: [{ name: "fast", models: ["gemini-3-flash-preview"] }] },
+    { id: "sovereign", models: [], configured: false, fallbacks: [] },
+  ] }),
+  // `?role=builder` previews the non-admin experience (publish requests instead of direct publish).
+  me: () => delay<Me>({ uid: mockUser.uid, email: mockUser.email, name: mockUser.displayName, role: mockRole() }),
+  stats: () => delay<HubStats>({ my_agents: agents.filter((a) => a.owner_uid === "u-lin").length, my_published: 2, hospital_published: agents.filter((a) => a.status === "published").length, runs_today: 1840, knowledge_files: docs.length }),
   listAgents: () => delay(agents.filter((a) => a.owner_uid === "u-lin" || a.status === "published")),
   getAgent: (id: string) => delay(find(id)),
   createAgent: (body: AgentIn) => { const a = mk(`ag-${Math.random().toString(36).slice(2, 7)}`, { ...body, updated_at: new Date().toISOString() }); agents = [a, ...agents]; return delay(a); },
-  updateAgent: (id: string, body: AgentIn) => { const a = { ...find(id), ...body, updated_at: new Date().toISOString() }; agents = agents.map((x) => (x.id === id ? a : x)); return delay(a); },
+  updateAgent: (id: string, body: AgentIn) => { const a = { ...find(id), ...body, knowledge_count: body.knowledge_doc_ids.length, updated_at: new Date().toISOString() }; agents = agents.map((x) => (x.id === id ? a : x)); return delay(a); },
   validate: (flow: Flow) => delay({ problems: flow.nodes.some((n) => n.type === "output") ? [] : ["缺少「回覆」節點"] }),
-  publishAgent: (id: string) => { const a = { ...find(id), status: "published" as const, version: find(id).version + 1, published_at: new Date().toISOString() }; agents = agents.map((x) => (x.id === id ? a : x)); return delay(a); },
+  publishAgent: (id: string) => setAgent(id, (a) => ({ ...a, status: "published", version: a.version + 1, published_at: now(), approved_by_email: mockUser.email, approved_at: now(), review: null })),
+  requestPublish: (id: string) => setAgent(id, (a) => ({ ...a, review: { state: "pending", version: a.version + 1, requested_by_email: mockUser.email, requested_at: now(), reason: "", decided_by_email: "", decided_at: null } })),
+  withdrawPublish: (id: string) => setAgent(id, (a) => ({ ...a, review: null })),
+  reviewAgent: (id: string, approve: boolean, reason = "") => setAgent(id, (a) => (approve
+    ? { ...a, status: "published", version: a.review!.version, published_at: now(), approved_by_email: mockUser.email, approved_at: now(), review: null }
+    : { ...a, review: { ...a.review!, state: "rejected", reason, decided_by_email: mockUser.email, decided_at: now() } })),
+  reviewQueue: () => delay(agents.filter((a) => a.review?.state === "pending")),
+  sandboxActivity: () => delay<SandboxActivity>({ runs_today: 1842, avg_latency_ms: 1860, pending_reviews: agents.filter((a) => a.review?.state === "pending" && (mockRole() === "admin" || a.owner_uid === mockUser.uid)).length, capped: false,
+    by_agent: Object.fromEntries(agents.map((a, i) => [a.id, { runs: a.status === "published" ? [412, 268, 940, 0, 131][i % 5] : 6 + i * 3, avg_latency_ms: 900 + i * 210 }])) }),
   unpublishAgent: (id: string) => { const a = { ...find(id), status: "draft" as const }; agents = agents.map((x) => (x.id === id ? a : x)); return delay(a); },
   deleteAgent: (id: string) => { agents = agents.filter((x) => x.id !== id); return delay(undefined); },
   run: (id: string, message: string, session_id?: string) => delay<RunResponse>({
@@ -215,10 +252,16 @@ export const mockApi = {
     ? { session_id, latency_ms: 420, reply: "✅ 已核准並完成後續動作：通知已送出至 #er-alerts。", citations: [],
         trace: [{ node_id: "ap", type: "approval", summary: "已由 Agent 負責人核准，繼續執行", ms: 0, prompt_tokens: 0, completion_tokens: 0, cost_usd: 0 }, { node_id: "tool", type: "tool", summary: "Slack 跨科急診警報 Bot · post_message · 成功", ms: 380, prompt_tokens: 0, completion_tokens: 0, cost_usd: 0 }, { node_id: "out", type: "output", summary: "回覆組裝完成", ms: 0, prompt_tokens: 0, completion_tokens: 0, cost_usd: 0 }] }
     : { session_id, latency_ms: 0, reply: "已拒絕此步驟，流程停止。", citations: [], trace: [{ node_id: "ap", type: "approval", summary: "負責人拒絕，流程停止", ms: 0, prompt_tokens: 0, completion_tokens: 0, cost_usd: 0 }] }, 600),
-  listKnowledge: (agentId: string) => delay(files.filter((f) => f.agent_id === agentId)),
-  library: () => delay(files),
-  uploadKnowledge: (agentId: string, file: File) => { const f: KnowledgeFile = { id: `k${Date.now()}`, agent_id: agentId, agent_name: find(agentId).name, name: file.name, content_type: file.type, size_bytes: file.size, gcs_uri: "gs://x", status: "indexed", error: "", uploaded_by: mockUser.email, created_at: new Date().toISOString() }; files = [f, ...files]; return delay(f, 1200); },
-  deleteKnowledge: (_a: string, fileId: string) => { files = files.filter((f) => f.id !== fileId); return delay(undefined); },
+  listDocs: () => delay(docs.map(withAgents)),
+  uploadDoc: (file: File, category: KnowledgeDoc["category"], department: string) => {
+    const d = D(`d-${Date.now()}`, file.name, category, department, file.size / 1e6, mockUser.email, 0);
+    docs = [d, ...docs]; return delay(withAgents(d), 1200);
+  },
+  replaceDoc: (id: string, file: File) => setDoc(id, (d) => ({ ...d, name: file.name, size_bytes: file.size, version: d.version + 1, status: "indexed", error: "", updated_at: now() })),
+  updateDoc: (id: string, category: KnowledgeDoc["category"], department: string) => setDoc(id, (d) => ({ ...d, category, department, updated_at: now() })),
+  reindexDoc: (id: string) => setDoc(id, (d) => ({ ...d, updated_at: now() })),
+  deleteDoc: (id: string) => { docs = docs.filter((d) => d.id !== id); agents = agents.map((a) => ({ ...a, knowledge_doc_ids: a.knowledge_doc_ids.filter((x) => x !== id), knowledge_count: a.knowledge_doc_ids.filter((x) => x !== id).length })); return delay(undefined); },
+  previewDoc: (id: string) => delay(`${findDoc(id).name}\n\n病患姓名：[PERSON_NAME]，[GENDER]，[AGE]歲，身分證 [TAIWAN_ID_NUMBER]。\n病歷號 MRN [MEDICAL_RECORD_NUMBER]，生日 [DATE_OF_BIRTH]，電話 [PHONE_NUMBER]。\n\n一、診斷標準\n……（示範文字：此處為送入 RAG Engine 的去識別化內容）`),
   audit: (q: AuditQuery, cursor?: string | null, limit = 25) => delay(auditPage(q, cursor, limit), 250),
   auditSummary: () => delay(auditSummary(), 250),
   auditCsv: (q: AuditQuery) => delay(new Blob([`\ufeffat,event_id,actor_email,action,category,severity,target_label,department\n${auditFilter(q).map((e) => [e.at, e.id, e.actor_email, e.action, e.category, e.severity, `"${e.target_label}"`, e.department].join(",")).join("\n")}`], { type: "text/csv" })),

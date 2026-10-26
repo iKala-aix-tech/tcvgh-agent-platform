@@ -24,10 +24,15 @@ export BACKEND_SA="tcvgh-backend-sa"
 
 # Who may sign in. Comma-separated Google Workspace domains.
 # For the sandbox we allow iKala; for TCVGH replace with their Workspace domain.
-export ALLOWED_DOMAINS="ikala.ai"
+export ALLOWED_DOMAINS="ikala.ai,cloud.ikala.tv"  # cloud.ikala.tv: non-admin test account (2026-10-26)
 
-# De-identification (option B). Leave false until a KMS key exists and infra/06-deid-key.sh has run.
-export DEID_ENABLED="false"
+# De-identification is always on (no flag; decided 2026-10-26): findings are replaced with [INFO_TYPE], no
+# recovery, no KMS. The inspect template holds the infoTypes; the backend SA needs
+# roles/dlp.user + roles/dlp.inspectTemplatesReader.
+export DLP_INSPECT_TEMPLATE="projects/${PROJECT_ID}/locations/global/inspectTemplates/esther-inspect-test"
+# CMEK for the upload bucket (original knowledge files keep their PHI). The GCS service agent needs
+# roles/cloudkms.cryptoKeyEncrypterDecrypter on this key.
+export UPLOAD_KMS_KEY="projects/${PROJECT_ID}/locations/${REGION}/keyRings/esther-key/cryptoKeys/esther-tcvgh-upload-key"
 # Admin dashboard (Agent 監控與成本): who is admin, hospital-wide monthly cap (USD), NT$ display rate.
 export ADMIN_EMAILS="esther.shih@ikala.ai"
 export MONTHLY_BUDGET_USD="5000"

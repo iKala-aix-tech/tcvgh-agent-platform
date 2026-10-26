@@ -1,31 +1,31 @@
-"""Option B: de-identify (pseudonymize) text before it is stored or sent to any model.
+"""De-identify text before it is stored, indexed, or sent to any model.
 
-Uses Sensitive Data Protection `deidentify_content` with deterministic encryption
-(CryptoDeterministicConfig) so the same real value always maps to the same token inside a
-request, which lets the model still reason about "the same patient". The AES key is wrapped by
-Cloud KMS; only the backend SA can unwrap it, and `reidentify` is a separate, audited call.
+Sensitive Data Protection `deidentify_content` replaces every finding with its infoType name
+(`王小明` -> `[PERSON_NAME]`). Decided 2026-10-26: replacement, no recovery, so there is no KMS
+key and no re-identify path. Which infoTypes count is configured in the inspect template
+(DLP_INSPECT_TEMPLATE), so the hospital can tune detectors in the console without a deploy.
 
-When DEID_ENABLED=false (sandbox smoke tests) text passes through unchanged.
+Applied at three points: the chat message at ingress, knowledge file text before RAG indexing,
+and retrieved chunks before they reach the LLM (covers files indexed before upload de-id existed).
+
+There is no off switch (decided 2026-10-26, after a local backend with DEID_ENABLED=false indexed
+raw PHI into the shared sandbox corpus). A DLP error propagates and fails the request: fail closed.
 """
 from functools import lru_cache
 
+from google.api_core.exceptions import InvalidArgument
 from google.cloud import dlp_v2
 
 from ..config import settings
 
-# Built-in infoTypes relevant to a Taiwanese hospital. Add custom regex infoTypes for the
-# hospital's own chart / MRN formats once TCVGH shares the patterns.
-INFO_TYPES = [
-    "PERSON_NAME",
-    "TAIWAN_NATIONAL_ID_NUMBER",
-    "PHONE_NUMBER",
-    "EMAIL_ADDRESS",
-    "DATE_OF_BIRTH",
-    "MEDICAL_RECORD_NUMBER",
-    "STREET_ADDRESS",
-    "PASSPORT",
+# Used only when no inspect template is configured. Names must be valid in asia-east1
+# (TAIWAN_NATIONAL_ID_NUMBER is not; the detector is TAIWAN_ID_NUMBER).
+FALLBACK_INFO_TYPES = [
+    "PERSON_NAME", "TAIWAN_ID_NUMBER", "PHONE_NUMBER", "EMAIL_ADDRESS", "DATE_OF_BIRTH",
+    "MEDICAL_RECORD_NUMBER", "STREET_ADDRESS", "PASSPORT",
 ]
-SURROGATE = "PHI"  # tokens look like PHI(12):AbCd...
+MAX_REQUEST_BYTES = 400_000  # deidentify_content caps a request at 0.5 MB; leave room for the envelope
+_REPLACE = {"info_type_transformations": {"transformations": [{"primitive_transformation": {"replace_with_info_type_config": {}}}]}}
 
 
 @lru_cache
@@ -33,48 +33,62 @@ def _client() -> dlp_v2.DlpServiceClient:
     return dlp_v2.DlpServiceClient()
 
 
-def _crypto_config() -> dict:
+def _request(item: dict) -> dict:
     s = settings()
-    return {
-        "crypto_deterministic_config": {
-            "crypto_key": {"kms_wrapped": {"wrapped_key": s.deid_kms_wrapped_key, "crypto_key_name": s.deid_kms_key_name}},
-            "surrogate_info_type": {"name": SURROGATE},
-        }
-    }
+    req: dict = {"parent": f"projects/{s.google_cloud_project}/locations/{s.region}", "deidentify_config": _REPLACE, "item": item}
+    if s.dlp_inspect_template:
+        req["inspect_template_name"] = s.dlp_inspect_template
+    else:
+        req["inspect_config"] = {"info_types": [{"name": t} for t in FALLBACK_INFO_TYPES], "min_likelihood": "POSSIBLE"}
+    return req
+
+
+def _pieces(text: str) -> list[str]:
+    """Split on line boundaries into pieces under the request size cap (a single huge line is hard-cut)."""
+    out, cur, size = [], [], 0
+    for line in text.splitlines(keepends=True):
+        n = len(line.encode())
+        while n > MAX_REQUEST_BYTES:  # pathological: no newline for 400 KB
+            cut = len(line) // 2
+            out.extend(_pieces(line[:cut]))
+            line = line[cut:]
+            n = len(line.encode())
+        if size + n > MAX_REQUEST_BYTES and cur:
+            out.append("".join(cur))
+            cur, size = [], 0
+        cur.append(line)
+        size += n
+    if cur:
+        out.append("".join(cur))
+    return out
+
+
+def _deidentify_piece(text: str) -> str:
+    """DLP also caps findings per request ("Too many findings"); dense text (rosters, lists) is halved until it fits."""
+    try:
+        return _client().deidentify_content(request=_request({"value": text})).item.value
+    except InvalidArgument as exc:
+        if "Too many findings" not in str(exc) or len(text) < 2:
+            raise
+        lines = text.splitlines(keepends=True)
+        if len(lines) > 1:
+            mid = len(lines) // 2
+            left, right = "".join(lines[:mid]), "".join(lines[mid:])
+        else:
+            left, right = text[: len(text) // 2], text[len(text) // 2:]
+        return _deidentify_piece(left) + _deidentify_piece(right)
 
 
 def deidentify(text: str) -> str:
-    s = settings()
-    if not s.deid_enabled or not text.strip():
+    if not text.strip():
         return text
-    parent = f"projects/{s.google_cloud_project}/locations/{s.region}"
-    resp = _client().deidentify_content(
-        request={
-            "parent": parent,
-            "inspect_config": {"info_types": [{"name": t} for t in INFO_TYPES], "min_likelihood": "POSSIBLE"},
-            "deidentify_config": {
-                "info_type_transformations": {"transformations": [{"primitive_transformation": _crypto_config()}]}
-            },
-            "item": {"value": text},
-        }
-    )
-    return resp.item.value
+    return "".join(_deidentify_piece(p) for p in _pieces(text))
 
 
-def reidentify(text: str) -> str:
-    """Reverse the pseudonymization. Only expose to users holding the admin/clinician role; every call is audited."""
-    s = settings()
-    if not s.deid_enabled or not text.strip():
-        return text
-    parent = f"projects/{s.google_cloud_project}/locations/{s.region}"
-    resp = _client().reidentify_content(
-        request={
-            "parent": parent,
-            "reidentify_config": {
-                "info_type_transformations": {"transformations": [{"primitive_transformation": _crypto_config()}]}
-            },
-            "inspect_config": {"custom_info_types": [{"info_type": {"name": SURROGATE}, "surrogate_type": {}}]},
-            "item": {"value": text},
-        }
-    )
-    return resp.item.value
+def deidentify_many(texts: list[str]) -> list[str]:
+    """One call for a batch of short texts (retrieved chunks), sent as a one-column table."""
+    if not texts:
+        return texts
+    table = {"headers": [{"name": "text"}], "rows": [{"values": [{"string_value": t}]} for t in texts]}
+    rows = _client().deidentify_content(request=_request({"table": table})).item.table.rows
+    return [r.values[0].string_value for r in rows]

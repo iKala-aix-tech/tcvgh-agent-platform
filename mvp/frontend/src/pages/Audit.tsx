@@ -8,8 +8,9 @@ const PAGE = 25;
 
 export const ACTION_LABEL: Record<string, string> = {
   "agent.create": "建立 Agent", "agent.update": "更新草稿", "agent.publish": "發布版本", "agent.unpublish": "下架", "agent.delete": "刪除 Agent",
+  "agent.publish_request": "申請全院發布", "agent.publish_withdraw": "撤回發布申請", "agent.publish_approve": "核可發布", "agent.publish_reject": "退回發布申請",
   "agent.run": "推論呼叫", "agent.approve": "核准外部動作", "agent.reject": "駁回外部動作",
-  "knowledge.upload": "上傳知識文件", "knowledge.delete": "移除知識文件", "knowledge.error": "知識索引失敗",
+  "knowledge.upload": "上傳知識文件", "knowledge.delete": "移除知識文件", "knowledge.error": "知識索引失敗", "knowledge.reindex": "去識別化重建索引",
   "connector.create": "新增連接器", "connector.update": "更新連接器設定", "connector.delete": "刪除連接器", "connector.test": "連線測試", "connector.invoke": "連接器調用",
   "monitoring.export": "匯出成本報表", "audit.export": "匯出稽核報表",
 };
@@ -68,8 +69,14 @@ function describe(e: AuditEntry): { text: string; sub?: string; subIcon?: string
     case "agent.update": return { text: "更新 Agent 草稿（流程、提示詞或設定）" };
     case "agent.publish": return { text: `發布為全院可用版本 v${str(d.version)}`, subTone: "ok" };
     case "agent.unpublish": return { text: "自全院下架，回到草稿狀態" };
+    case "agent.publish_request": return { text: `申請將 v${str(d.version)} 發布至全院，等待管理員審核` };
+    case "agent.publish_withdraw": return { text: `撤回 v${str(d.version)} 的發布申請` };
+    case "agent.publish_approve": return { text: `核可 v${str(d.version)}，已成為全院可用版本`, subTone: "ok" };
+    case "agent.publish_reject": return { text: `退回 v${str(d.version)} 的發布申請`, sub: str(d.reason), subIcon: "undo", subTone: "warn" };
     case "agent.delete": return { text: "刪除 Agent 及其知識文件與檢索語料庫" };
-    case "knowledge.upload": return { text: `上傳「${str(d.file)}」${d.bytes ? ` · ${fmtBytes(Number(d.bytes))}` : ""}`, sub: "內容已去識別化後才建立索引", subIcon: "verified_user", subTone: "ok" };
+    case "knowledge.upload": return { text: `上傳「${str(d.file)}」${d.bytes ? ` · ${fmtBytes(Number(d.bytes))}` : ""}`,
+      ...(d.deidentified ? { sub: "內容已去識別化後才建立索引", subIcon: "verified_user", subTone: "ok" as const } : { sub: "舊紀錄：當時未去識別化，需重建索引", subIcon: "warning", subTone: "warn" as const }) };
+    case "knowledge.reindex": return { text: `「${str(d.file)}」以去識別化文字重建索引`, sub: "原檔保留於 CMEK 加密儲存桶", subIcon: "verified_user", subTone: "ok" };
     case "knowledge.delete": return { text: `移除「${str(d.file)}」` };
     case "knowledge.error": return { text: `「${str(d.file)}」索引失敗`, sub: str(d.error), subIcon: "error", subTone: "warn" };
     case "monitoring.export":

@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import User, current_user
 from .config import settings
+from .engine import llm
 from .routers import agents, audit, connectors, knowledge, monitoring, runs
 
 app = FastAPI(title="TCVGH Agent Platform API", version="0.2.0")
@@ -24,8 +25,14 @@ app.include_router(monitoring.router)
 def health():
     # Note: Cloud Run's frontend answers /healthz itself (404), so health lives under /api.
     s = settings()
-    return {"ok": True, "project": s.google_cloud_project, "region": s.region, "deid_enabled": s.deid_enabled,
+    return {"ok": True, "project": s.google_cloud_project, "region": s.region, "deid": "always", "dlp_inspect_template": s.dlp_inspect_template,
             "rag_enabled": s.rag_enabled, "rag_location": s.rag_location}
+
+
+@app.get("/api/models")
+def model_groups(user: User = Depends(current_user)):
+    """Selectable model groups with their live LiteLLM members and fallback chain (Studio labels)."""
+    return {"groups": llm.routing_table()}
 
 
 @app.get("/api/me")

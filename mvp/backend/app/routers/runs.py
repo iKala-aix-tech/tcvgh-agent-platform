@@ -11,12 +11,14 @@ from ..auth import User, current_user
 from ..engine import deid, flow, llm
 from ..schemas import AgentIn, ApproveRequest, RunRequest, RunResponse, StepTrace
 from .agents import can_edit
+from .knowledge import resolve_rag_files
 
 router = APIRouter(prefix="/api/agents/{agent_id}", tags=["runs"])
 HISTORY_TURNS = 10
 
 
-def _agent_def(agent_id: str, user: User, use_published: bool) -> tuple[AgentIn, str | None]:
+def _agent_def(agent_id: str, user: User, use_published: bool, version: int | None = None) -> tuple[AgentIn, list[str]]:
+    """The definition to run (draft, live snapshot or a specific version) and its attached documents' ragFiles."""
     ref = db.client().collection("agents").document(agent_id)
     snap = ref.get()
     if not snap.exists:
@@ -25,16 +27,24 @@ def _agent_def(agent_id: str, user: User, use_published: bool) -> tuple[AgentIn,
     editable = can_edit(data, user)
     if not editable and data.get("status") != "published":
         raise HTTPException(403, "agent is not published")
-    if use_published or not editable:  # non-owners always run the published snapshot
+    if version:  # owner/admin trying a specific snapshot, e.g. the one waiting for publish review
+        if not editable:
+            raise HTTPException(403, "not your agent")
+        snapshot = ref.collection("versions").document(str(version)).get()
+        if not snapshot.exists:
+            raise HTTPException(404, f"version {version} not found")
+        data = snapshot.to_dict() or {}
+    elif use_published or not editable:  # non-owners always run the published snapshot
         if not data.get("version"):
             raise HTTPException(409, "agent has no published version")
         data = ref.collection("versions").document(str(data["version"])).get().to_dict() or data
-    return AgentIn.model_validate(data), (snap.to_dict() or {}).get("rag_corpus")
+    agent = AgentIn.model_validate(data)
+    return agent, resolve_rag_files(agent.knowledge_doc_ids)
 
 
 @router.post("/run", response_model=RunResponse)
 def run_agent(agent_id: str, body: RunRequest, user: User = Depends(current_user)):
-    agent, corpus = _agent_def(agent_id, user, body.use_published)
+    agent, rag_files = _agent_def(agent_id, user, body.use_published, body.version)
 
     session_id = body.session_id or uuid.uuid4().hex
     sess_ref = db.client().collection("sessions").document(session_id)
@@ -48,7 +58,7 @@ def run_agent(agent_id: str, body: RunRequest, user: User = Depends(current_user
     t0 = time.perf_counter()
     try:
         r = flow.run_flow(agent, agent_id=agent_id, user_id=user.uid, user_message=safe_message,
-                          history=history, rag_corpus=corpus)
+                          history=history, rag_files=rag_files)
     except APIStatusError as exc:
         if exc.status_code == 401:
             llm.reset_client_cache()
@@ -59,7 +69,7 @@ def run_agent(agent_id: str, body: RunRequest, user: User = Depends(current_user
                         {"role": "assistant", "content": r.reply}]
     # A run that stopped at an approval node parks its state on the session; a new message discards it.
     sess["pending"] = {**r.pending, "agent_id": agent_id, "requested_by": user.uid, "use_published": body.use_published,
-                       "at": db.now()} if r.pending else None
+                       "version": body.version, "at": db.now()} if r.pending else None
     sess["updated_at"] = db.now()
     sess_ref.set(sess)
     db.audit(user.uid, "agent.run", user.email, agent_id=agent_id, session_id=session_id, latency_ms=latency,
@@ -101,12 +111,12 @@ def approve_run(agent_id: str, body: ApproveRequest, user: User = Depends(curren
         return RunResponse(session_id=body.session_id, reply=reply, latency_ms=0,
                            trace=[StepTrace(node_id=pending["node_id"], type="approval", summary="負責人拒絕，流程停止")])
 
-    agent, corpus = _agent_def(agent_id, user, bool(pending.get("use_published")))
+    agent, rag_files = _agent_def(agent_id, user, bool(pending.get("use_published")), pending.get("version"))
     history = [{"role": m["role"], "content": m["content"]} for m in sess["messages"][-2 * HISTORY_TURNS:]]
     t0 = time.perf_counter()
     try:
         r = flow.run_flow(agent, agent_id=agent_id, user_id=user.uid, user_message=str(pending["ctx"].get("input", "")),
-                          history=history, rag_corpus=corpus, resume=pending)
+                          history=history, rag_files=rag_files, resume=pending)
     except APIStatusError as exc:
         if exc.status_code == 401:
             llm.reset_client_cache()
@@ -116,7 +126,7 @@ def approve_run(agent_id: str, body: ApproveRequest, user: User = Depends(curren
     latency = int((time.perf_counter() - t0) * 1000)
     sess["messages"] = [*sess["messages"], {"role": "assistant", "content": r.reply}]
     sess["pending"] = {**r.pending, "agent_id": agent_id, "requested_by": user.uid, "use_published": pending.get("use_published"),
-                       "at": db.now()} if r.pending else None
+                       "version": pending.get("version"), "at": db.now()} if r.pending else None
     sess["updated_at"] = db.now()
     sess_ref.set(sess)
     db.audit(user.uid, "agent.approve", user.email, agent_id=agent_id, session_id=body.session_id, node_id=pending["node_id"],

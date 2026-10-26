@@ -8,7 +8,6 @@ import { Icon } from "./ui";
 const NAV = [
   { group: "院區智能總覽" },
   { to: "/hub", icon: "hub", label: "Agent Hub / 我的工作台" },
-  { to: "/studio", icon: "account_tree", label: "Agent Studio 工作流建置" },
   { to: "/connectors", icon: "cable", label: "Connectors 連接器" },
   { to: "/sandbox", icon: "rocket_launch", label: "沙盒測試與發布中心" },
   { to: "/monitoring", icon: "monitoring", label: "Agent 監控與成本", admin: true },

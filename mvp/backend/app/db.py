@@ -1,8 +1,10 @@
 """Firestore access. Collections:
 
-agents/{agentId}                 draft definition (mutable)      owner_uid, name, ..., flow{nodes,edges}, rag_corpus
+agents/{agentId}                 draft definition (mutable)      owner_uid, name, ..., flow{nodes,edges}, knowledge_doc_ids
 agents/{agentId}/versions/{n}    immutable snapshot on publish
-agents/{agentId}/knowledge/{id}  uploaded knowledge files (name, gcs_uri, rag_file, status)
+agents/{agentId}/knowledge/{id}  LEGACY per-agent files (before the library; see scripts/migrate_knowledge_library.py)
+documents/{docId}                hospital knowledge library: name, category, department, gcs_uri, deid_uri, rag_file, version
+config/knowledge                 {rag_corpus}: the single hospital RAG corpus
 sessions/{sessionId}             test-chat / channel conversations, pseudonymized content only
 audit/{autoId}                   who did what, when (append-only)
 usage/{autoId}                   one row per LLM call: tokens, cost, served model (no prompt text)

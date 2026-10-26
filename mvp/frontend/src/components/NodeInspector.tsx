@@ -1,10 +1,16 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
-import { MODEL_GROUPS, NODE_KINDS, type ActionSpec, type ConnectorOut, type FlowNode } from "../types";
+import { MODEL_GROUPS, NODE_KINDS, type ActionSpec, type ConnectorOut, type FlowNode, type ModelGroup } from "../types";
+import { describeGroup, useModelGroups } from "../modelGroups";
 import { Field, Icon } from "./ui";
 
-export default function NodeInspector({ node, onChange, onDelete, knowledgeCount }: { node: FlowNode; onChange: (n: FlowNode) => void; onDelete: () => void; knowledgeCount: number }) {
+export default function NodeInspector({ node, onChange, onDelete, knowledgeCount, effectiveGroup, defaultGroup }: {
+  node: FlowNode; onChange: (n: FlowNode) => void; onDelete: () => void; knowledgeCount: number;
+  /** pinned group (or undefined) -> what actually runs after sovereign_only and the cost cap. */
+  effectiveGroup: (pinned?: ModelGroup) => ModelGroup; defaultGroup: ModelGroup;
+}) {
+  const groups = useModelGroups();
   const set = (k: string, v: unknown) => onChange({ ...node, data: { ...node.data, [k]: v } });
   // Several keys in ONE update: calling set() repeatedly would each start from the same stale node, so the last call wins.
   const setMany = (patch: Record<string, unknown>) => onChange({ ...node, data: { ...node.data, ...patch } });
@@ -26,27 +32,37 @@ export default function NodeInspector({ node, onChange, onDelete, knowledgeCount
           <input value={s("query", "{{input}}")} onChange={(e) => set("query", e.target.value)} /></Field>
         <Field label="取回段落數 top_k"><input type="number" min={1} max={20} value={Number(node.data.top_k ?? 5)} onChange={(e) => set("top_k", Number(e.target.value))} /></Field>
         <p className={`mt-2 flex items-center gap-1 text-xs ${knowledgeCount ? "text-primary" : "text-warning"}`}><Icon name={knowledgeCount ? "check_circle" : "warning"} className="text-[16px]" />
-          {knowledgeCount ? `已連結 ${knowledgeCount} 份知識文件` : "此 Agent 尚未上傳知識文件（左側「臨床知識庫」區塊）"}</p>
+          {knowledgeCount ? `已掛載 ${knowledgeCount} 份知識文件` : "此 Agent 尚未掛載知識文件（左側「臨床知識庫與規範掛載」）"}</p>
       </>)}
       {(node.type === "llm" || node.type === "structured_output") && (<>
         <Field label="提示詞" hint="可用 {{input}}、{{last}}、{{節點id}}"><textarea rows={4} className="font-mono text-xs" value={s("prompt", "{{input}}")} onChange={(e) => set("prompt", e.target.value)} /></Field>
         {node.type === "structured_output" && (
           <Field label="JSON Schema" hint="模型以 JSON 模式輸出並解析；解析失敗則原文通過。"><textarea rows={6} className="font-mono text-xs" value={s("schema", "{}")} onChange={(e) => set("schema", e.target.value)} /></Field>
         )}
-        <Field label="此步驟指定模型群組" hint="留空 = 依路由策略">
-          <select value={s("group")} onChange={(e) => set("group", e.target.value || undefined)}>
-            <option value="">（依路由策略）</option>{MODEL_GROUPS.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}
-          </select></Field>
       </>)}
+      {(node.type === "llm" || node.type === "structured_output" || node.type === "condition") && (() => {
+        const pinned = (s("group") || undefined) as ModelGroup | undefined;
+        const runs = effectiveGroup(pinned);
+        return (<>
+          <Field label="此步驟指定模型群組" hint={`留空 = 使用預設群組 ${defaultGroup}（提問含關鍵字時升級 reasoning）。${describeGroup(groups, runs)}`}>
+            <select value={s("group")} onChange={(e) => set("group", e.target.value || undefined)}>
+              <option value="">（依預設群組與路由策略）</option>{MODEL_GROUPS.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}
+            </select></Field>
+          {pinned && runs !== pinned && <p className="mt-1 flex items-start gap-1 text-[11px] text-warning"><Icon name="info" className="text-[14px]" />執行時改用 {runs}（{runs === "sovereign" ? "已勾選「僅限院內模型」" : "超過成本上限"}）。</p>}
+        </>);
+      })()}
       {node.type === "condition" && (
         <Field label="判斷問題" hint="LLM 回答 YES/NO，分別走 true / false 分支"><textarea rows={3} value={s("question")} onChange={(e) => set("question", e.target.value)} /></Field>
       )}
       {node.type === "his_emr" && (
         <Field label="查詢條件（模板）" hint="院內 FHIR 閘道尚未串接；此節點目前回傳 stub 標記。"><input value={s("query", "{{input}}")} onChange={(e) => set("query", e.target.value)} /></Field>
       )}
-      {node.type === "pii_mask" && <p className="mt-3 text-xs text-on-surface-variant">對上一步輸出再次執行 Sensitive Data Protection 去識別化。沙盒 DEID_ENABLED=false 時原文通過。</p>}
+      {node.type === "pii_mask" && <p className="mt-3 text-xs text-on-surface-variant">此節點已停用。平台會自動對所有輸入、知識文件與檢索段落執行 Sensitive Data Protection 去識別化，不需在流程中加入；可直接刪除。</p>}
       {node.type === "tool" && <ToolConfig node={node} set={set} setMany={setMany} />}
-      {node.type === "approval" && <Field label="核准訊息"><input value={s("message")} onChange={(e) => set("message", e.target.value)} /></Field>}
+      {node.type === "approval" && <>
+        <Field label="核准訊息"><input value={s("message")} onChange={(e) => set("message", e.target.value)} /></Field>
+        <p className="mt-2 text-xs text-on-surface-variant">此節點已不再提供新增（全院發布改由管理員核可）。既有節點仍會在每次執行時暫停，等待 Agent 負責人核准後才繼續下一步。</p>
+      </>}
       {node.type === "output" && <Field label="回覆模板"><textarea rows={3} className="font-mono text-xs" value={s("template", "{{last}}")} onChange={(e) => set("template", e.target.value)} /></Field>}
     </div>
   );

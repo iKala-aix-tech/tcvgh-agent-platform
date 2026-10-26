@@ -19,7 +19,7 @@ function summary(type: string, d: Record<string, unknown>): string {
     case "condition": return String(d.question ?? "（未設定判斷問題）");
     case "tool": return d.connector_id ? `${d.action ?? "（未選動作）"}` : "（未選擇連接器）";
     case "approval": return String(d.message ?? "需由主治醫師核准");
-    case "pii_mask": return "遮蔽姓名、身分證、電話（Sensitive Data Protection）";
+    case "pii_mask": return "已停用：平台已自動去識別化，可刪除此節點";
     case "output": return String(d.template ?? "{{last}}");
     default: return "";
   }
@@ -108,7 +108,7 @@ export default function Canvas({ flow, onChange, onSelect, selectedId }: Props) 
     <div className="relative h-full">
       <div className="absolute left-3 top-3 z-10 flex flex-wrap items-center gap-1.5 rounded-lg border border-hairline bg-white/95 p-1.5 shadow-float">
         <span className="px-1 font-mono text-[10px] text-outline">可拖曳節點庫：</span>
-        {NODE_KINDS.map((k) => (
+        {NODE_KINDS.filter((k) => !k.retired).map((k) => (
           <button key={k.type} title={k.hint} onClick={() => add(k.type)} className="btn-soft gap-1 px-2 py-1 text-[11px]"><Icon name={k.icon} className="text-[16px]" />{k.label}</button>
         ))}
       </div>

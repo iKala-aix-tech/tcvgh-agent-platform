@@ -23,9 +23,11 @@ class Settings(BaseSettings):
     monthly_budget_usd: float = 5000.0
     usd_twd_rate: float = 32.0
 
-    deid_enabled: bool = False
-    deid_kms_wrapped_key: str = ""
-    deid_kms_key_name: str = ""
+    # De-identification is mandatory (no on/off flag, decided 2026-10-26): every message, knowledge file
+    # and retrieved chunk goes through Sensitive Data Protection; if DLP fails, the request fails.
+    # Sensitive Data Protection inspect template (infoTypes + likelihood), e.g.
+    # projects/<p>/locations/global/inspectTemplates/<id>. Empty -> deid.FALLBACK_INFO_TYPES.
+    dlp_inspect_template: str = ""
 
     # Knowledge (Vertex AI RAG Engine). asia-east1 is a Preview region for RAG Engine (checked 2026-10-24).
     rag_enabled: bool = True

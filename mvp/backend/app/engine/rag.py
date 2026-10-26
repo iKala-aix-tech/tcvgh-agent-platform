@@ -1,4 +1,9 @@
-"""Knowledge: Vertex AI RAG Engine, one corpus per agent.
+"""Knowledge: Vertex AI RAG Engine, ONE hospital-wide corpus for the knowledge library.
+
+Decided 2026-10-26: documents live in a shared library (documents/{id}) and agents attach them
+(AgentIn.knowledge_doc_ids). Retrieval passes the attached ragFile ids (`rag_file_ids`, verified live:
+an unknown id returns nothing) so each agent only searches its own documents. Before this there was
+one corpus per agent; scripts/migrate_knowledge_library.py moves those files into the library.
 
 Why RAG Engine: Google manages chunking, embeddings and the vector store; we only keep the file
 list in Firestore and the original bytes in the upload bucket (audit + re-index). Uses the
@@ -19,9 +24,11 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote, unquote
 
+from google.api_core.exceptions import Conflict
 from google.genai import errors as gerrors
 from google.genai import types as gtypes
 
+from .. import db
 from ..config import settings
 
 log = logging.getLogger(__name__)
@@ -112,14 +119,46 @@ def delete_corpus(corpus_name: str) -> None:
         log.warning("rag delete_corpus %s: %s", corpus_name, exc)
 
 
-def retrieve(corpus_name: str, query: str, top_k: int | None = None) -> list[dict]:
-    """Return [{text, source, uri, score}] ordered by relevance."""
+_CONFIG_DOC = ("config", "knowledge")
+_hospital_corpus = ""  # cached per process once known
+
+
+def hospital_corpus() -> str:
+    """The shared corpus, created on the first library upload. Its name is recorded with a Firestore
+    `create`, so if two first uploads race, the loser deletes its corpus and uses the winner's."""
+    global _hospital_corpus
+    if _hospital_corpus:
+        return _hospital_corpus
+    ref = db.client().collection(_CONFIG_DOC[0]).document(_CONFIG_DOC[1])
+    name = (ref.get().to_dict() or {}).get("rag_corpus")
+    if name:
+        _hospital_corpus = name
+        return name
+    name = create_corpus("tcvgh-hospital-knowledge", "TCVGH 院內指引與醫學知識庫 (de-identified text only)")
+    try:
+        ref.create({"rag_corpus": name, "created_at": db.now()})
+    except Conflict:
+        delete_corpus(name)
+        name = ref.get().to_dict()["rag_corpus"]
+    _hospital_corpus = name
+    return name
+
+
+def file_id(rag_file_name: str) -> str:
+    """projects/.../ragCorpora/C/ragFiles/F -> F (what `rag_file_ids` expects)."""
+    return rag_file_name.rsplit("/", 1)[-1]
+
+
+def retrieve(corpus_name: str, rag_files: list[str], query: str, top_k: int | None = None) -> list[dict]:
+    """Return [{text, source, uri, score}] ordered by relevance, searching only `rag_files`."""
     from agentplatform import types as t
 
+    if not rag_files:
+        return []
     s = settings()
     resp = _client().rag.retrieve_contexts(
         vertex_rag_store=gtypes.VertexRagStore(
-            rag_resources=[gtypes.VertexRagStoreRagResource(rag_corpus=corpus_name)]
+            rag_resources=[gtypes.VertexRagStoreRagResource(rag_corpus=corpus_name, rag_file_ids=[file_id(f) for f in rag_files])]
         ),
         query=t.RagQuery(
             text=query[:4000],

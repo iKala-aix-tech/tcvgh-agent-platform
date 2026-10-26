@@ -1,23 +1,27 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import type { AgentOut, Citation, RunResponse, StepTrace } from "../types";
-import { Empty, ErrorBox, Icon, Spinner, StatusPill, fmtTime } from "../components/ui";
+import { ErrorBox, Icon, Spinner, fmtTime } from "../components/ui";
 import { currentName, currentUid } from "../mock";
 
 interface Msg { role: "user" | "assistant"; content: string; at: Date; trace?: StepTrace[]; citations?: Citation[]; structured?: Record<string, unknown> | null; latency?: number; pending?: RunResponse["pending_approval"]; decided?: "approved" | "rejected" }
 
 const SUGGESTIONS = ["請摘要重點並列出注意事項", "轉為台語繁體通俗長輩語意", "依院內指引列出引用來源"];
 
-export default function Sandbox() {
+/** Which definition the playground runs: the owner's draft, the live snapshot, or the snapshot waiting for publish review. */
+type Target = "draft" | "published" | "review";
+
+export default function Sandbox({ role }: { role: string }) {
   const { id } = useParams();
   const nav = useNavigate();
+  const [params] = useSearchParams();
+  const admin = role === "admin";
   const [agent, setAgent] = useState<AgentOut | null>(null);
-  const [list, setList] = useState<AgentOut[]>([]);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [text, setText] = useState("");
   const [session, setSession] = useState<string | undefined>();
-  const [usePublished, setUsePublished] = useState(false);
+  const [target, setTarget] = useState<Target>("draft");
   const [busy, setBusy] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [err, setErr] = useState("");
@@ -25,12 +29,19 @@ export default function Sandbox() {
   const bottom = useRef<HTMLDivElement>(null);
 
   const editable = !!agent && agent.owner_uid === currentUid();
+  const pending = agent?.review?.state === "pending" ? agent.review : null;
+  const reviewVersion = target === "review" ? pending?.version : undefined;
 
   useEffect(() => {
-    if (!id) { api.listAgents().then(setList); return; }
+    if (!id) return;
     setAgent(null); setMsgs([]); setSession(undefined); setErr("");
-    api.getAgent(id).then((a) => { setAgent(a); setUsePublished(a.owner_uid !== currentUid()); }).catch((e) => setErr(String(e)));
-  }, [id]);
+    api.getAgent(id).then((a) => {
+      setAgent(a);
+      const mine = a.owner_uid === currentUid();
+      setTarget(params.get("version") && a.review?.state === "pending" && (mine || admin) ? "review" : mine ? "draft" : "published");
+    }).catch((e) => setErr(String(e)));
+  }, [id, params, admin]);
+  const switchTarget = (t: Target) => { setTarget(t); setSession(undefined); setMsgs([]); };
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, busy]);
 
   const send = async (content = text) => {
@@ -39,7 +50,7 @@ export default function Sandbox() {
     setMsgs((m) => [...m, { role: "user", content, at: new Date() }]);
     setBusy(true);
     try {
-      const r = await api.run(id, content, session, usePublished);
+      const r = await api.run(id, content, session, target === "published", reviewVersion);
       setSession(r.session_id);
       setMsgs((m) => [...m, { role: "assistant", content: r.reply, at: new Date(), trace: r.trace, citations: r.citations, structured: r.structured, latency: r.latency_ms, pending: r.pending_approval }]);
     } catch (e) { setErr(String(e)); } finally { setBusy(false); }
@@ -56,66 +67,70 @@ export default function Sandbox() {
     } catch (e) { setErr(String(e)); } finally { setBusy(false); }
   };
 
-  const publish = async () => {
+  /** Admins publish directly; builders request review (or withdraw a pending request). */
+  const publishAction = async (f: (id: string) => Promise<AgentOut>) => {
     if (!agent) return;
     setPublishing(true); setErr("");
     try {
-      const a = await api.publishAgent(agent.id); setAgent(a);
+      const a = await f(agent.id); setAgent(a);
+      if (target === "review" && a.review?.state !== "pending") switchTarget(editable ? "draft" : "published");
     } catch (e) { setErr(String(e)); } finally { setPublishing(false); }
+  };
+  const reject = () => {
+    const reason = prompt("退回原因（負責人會看到）：")?.trim();
+    if (reason) publishAction((x) => api.reviewAgent(x, false, reason));
   };
   const unpublish = async () => { if (!agent || !confirm("下架後其他同仁將無法在 Hub 看到或使用此 Agent。確定？")) return; setAgent(await api.unpublishAgent(agent.id)); };
 
-  if (!id) {
-    return (
-      <div className="mx-auto max-w-5xl px-6 py-6">
-        <h1 className="text-2xl font-bold">沙盒測試與發布中心</h1>
-        <p className="mt-1 text-sm text-on-surface-variant">選擇一個 Agent 進入臨床推論沙盒。</p>
-        <div className="mt-5 grid gap-3 md:grid-cols-2">
-          {list.map((a) => (
-            <button key={a.id} className="card flex items-center gap-3 px-4 py-3 text-left hover:shadow-float" onClick={() => nav(`/sandbox/${a.id}`)}>
-              <Icon name="science" className="text-primary" /><span className="flex-1"><span className="block font-semibold">{a.name}</span><span className="block text-xs text-on-surface-variant">{a.owner_email}</span></span><StatusPill status={a.status} version={a.version} />
-            </button>
-          ))}
-        </div>
-        {list.length === 0 && <div className="mt-5"><Empty icon="science" title="沒有可測試的 Agent" /></div>}
-      </div>
-    );
-  }
   if (!agent) return <div className="grid h-full place-items-center">{err ? <ErrorBox msg={err} /> : <Spinner />}</div>;
 
   return (
     <div className="flex h-full flex-col">
       <section className="flex shrink-0 flex-wrap items-center gap-4 border-b border-hairline bg-white px-5 py-3">
-        <button className="btn-ghost px-2" onClick={() => nav(editable ? `/studio/${agent.id}` : "/hub")}><Icon name="arrow_back" /></button>
+        <button className="btn-ghost px-2" onClick={() => nav(editable ? `/studio/${agent.id}` : "/sandbox")}><Icon name="arrow_back" /></button>
         <div className="min-w-0 flex-1 leading-tight">
           <p className="flex flex-wrap items-center gap-2 text-lg font-bold">{agent.name}
             <span className="chip">沙盒驗證階段 {agent.status === "published" ? `(v${agent.version} 已發布)` : "(草稿)"}</span></p>
           <p className="font-mono text-[11px] text-outline">ID: {agent.id} · 負責人 {agent.owner_email} · 模型群組 {agent.model_group} · {agent.knowledge_count} 份知識文件</p>
         </div>
-        {editable && (
-          <label className="flex items-center gap-2 rounded-full bg-surface-container-low px-3 py-1 text-xs">
-            <input type="checkbox" className="w-auto" checked={usePublished} disabled={!agent.version} onChange={(e) => { setUsePublished(e.target.checked); setSession(undefined); setMsgs([]); }} />
-            測試已發布版本{agent.version ? ` v${agent.version}` : "（尚無）"}
+        {(editable || admin) && (
+          <label className="flex items-center gap-2 rounded-full bg-surface-container-low px-3 py-1 text-xs">測試版本
+            <select className="w-auto border-0 bg-transparent py-0.5 text-xs" value={target} onChange={(e) => switchTarget(e.target.value as Target)}>
+              <option value="draft">草稿（目前編輯中）</option>
+              {agent.version > 0 && <option value="published">已發布 v{agent.version}</option>}
+              {pending && <option value="review">待審 v{pending.version}</option>}
+            </select>
           </label>
         )}
-        {editable && (agent.status === "published"
-          ? <button className="btn-soft" onClick={unpublish}><Icon name="unpublished" className="text-[18px]" />下架</button>
-          : null)}
-        {editable && (
-          <button className="btn-primary px-5 py-2.5" onClick={publish} disabled={publishing}>
+        {editable && agent.status === "published" && <button className="btn-soft" onClick={unpublish}><Icon name="unpublished" className="text-[18px]" />下架</button>}
+        {admin && pending && (
+          <>
+            <button className="btn-soft" onClick={reject} disabled={publishing}><Icon name="undo" className="text-[18px]" />退回 v{pending.version}</button>
+            <button className="btn-primary px-5 py-2.5" onClick={() => publishAction((x) => api.reviewAgent(x, true))} disabled={publishing}>
+              {publishing ? <Spinner /> : <Icon name="verified" className="text-[18px]" />}核可發布 v{pending.version}</button>
+          </>
+        )}
+        {editable && admin && !pending && (
+          <button className="btn-primary px-5 py-2.5" onClick={() => publishAction(api.publishAgent)} disabled={publishing}>
             {publishing ? <Spinner /> : <Icon name="publish" className="text-[18px]" />}
-            {agent.status === "published" ? `發布新版本至 Agent Hub（v${agent.version + 1}）` : "發布至 Agent Hub（全院可用）"}
+            {agent.status === "published" ? `發布新版本至全院（v${agent.version + 1}）` : "直接發布至全院"}
           </button>
         )}
+        {editable && !admin && (pending
+          ? <button className="btn-soft" onClick={() => publishAction(api.withdrawPublish)} disabled={publishing}>{publishing ? <Spinner /> : <Icon name="undo" className="text-[18px]" />}撤回 v{pending.version} 申請</button>
+          : <button className="btn-primary px-5 py-2.5" onClick={() => publishAction(api.requestPublish)} disabled={publishing}>
+              {publishing ? <Spinner /> : <Icon name="send" className="text-[18px]" />}申請全院發布（v{agent.version + 1}）</button>)}
       </section>
-      {agent.status === "published" && <div className="flex items-center gap-2 bg-primary-tint px-5 py-1.5 text-xs text-primary-dark"><Icon name="verified" className="text-[16px]" />v{agent.version} 已於 {fmtTime(agent.published_at)} 發布，全院同仁可在 Agent Hub 看到並對話。草稿的後續修改需再次發布才會生效。</div>}
+      {agent.status === "published" && <div className="flex items-center gap-2 bg-primary-tint px-5 py-1.5 text-xs text-primary-dark"><Icon name="verified" className="text-[16px]" />v{agent.version} 已於 {fmtTime(agent.published_at)} 經{agent.approved_by_email ? ` ${agent.approved_by_email} ` : "管理員"}核可發布，全院同仁可看到並對話。草稿的後續修改需再次發布才會生效。</div>}
+      {pending && (editable || admin) && <div className="flex items-center gap-2 bg-warning-container px-5 py-1.5 text-xs text-warning"><Icon name="hourglass_top" className="text-[16px]" />v{pending.version} 由 {pending.requested_by_email} 於 {fmtTime(pending.requested_at)} 申請全院發布，等待管理員審核。審核的是申請當下的版本，之後的草稿修改不包含在內。</div>}
+      {agent.review?.state === "rejected" && editable && <div className="flex items-center gap-2 bg-error-container px-5 py-1.5 text-xs text-on-error-container"><Icon name="undo" className="text-[16px]" />v{agent.review.version} 被 {agent.review.decided_by_email} 退回：{agent.review.reason}。修改草稿後可重新申請。</div>}
 
       <div className="mx-auto flex w-full max-w-5xl min-h-0 flex-1 flex-col px-5 py-4">
         <div className="card flex min-h-0 flex-1 flex-col">
           <div className="flex items-center justify-between border-b border-hairline px-5 py-3">
             <div className="flex items-center gap-3">
               <span className="grid h-9 w-9 place-items-center rounded-lg bg-primary-tint text-primary"><Icon name="science" /></span>
-              <div className="leading-tight"><p className="font-bold">臨床推論沙盒 (Playground)</p><p className="font-mono text-[11px] text-outline">{usePublished ? `已發布版本 v${agent.version}` : "草稿版本"} · 經 LiteLLM 路由 · {agent.model_group}</p></div>
+              <div className="leading-tight"><p className="font-bold">臨床推論沙盒 (Playground)</p><p className="font-mono text-[11px] text-outline">{target === "review" ? `待審版本 v${pending?.version}` : target === "published" ? `已發布版本 v${agent.version}` : "草稿版本"} · 經 LiteLLM 路由 · {agent.model_group}</p></div>
             </div>
             <div className="flex items-center gap-2 text-xs">
               {agent.test_cases.length > 0 && (
@@ -128,7 +143,7 @@ export default function Sandbox() {
           </div>
 
           <div className="flex-1 space-y-4 overflow-auto px-5 py-4">
-            <p className="mx-auto w-fit rounded-full bg-surface-container-low px-3 py-1 font-mono text-[11px] text-on-surface-variant"><Icon name="lock" className="mr-1 text-[12px]" />輸入內容於推論前先經 Sensitive Data Protection 去識別化（沙盒目前 {msgs.length ? "" : ""}依 DEID_ENABLED 設定）</p>
+            <p className="mx-auto w-fit rounded-full bg-surface-container-low px-3 py-1 font-mono text-[11px] text-on-surface-variant"><Icon name="lock" className="mr-1 text-[12px]" />輸入內容、知識文件與檢索段落一律先經 Sensitive Data Protection 去識別化</p>
             {msgs.length === 0 && <div className="py-10 text-center text-sm text-on-surface-variant">輸入醫師指示或測試提問開始。{agent.knowledge_count > 0 && " 本 Agent 已掛載知識庫，回答會附上引用來源。"}</div>}
             {msgs.map((m, i) =>
               m.role === "user" ? (

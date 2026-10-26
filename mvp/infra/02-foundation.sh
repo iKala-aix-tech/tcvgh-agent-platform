@@ -53,6 +53,10 @@ if ! gcloud storage buckets describe "gs://$UPLOAD_BUCKET" >/dev/null 2>&1; then
 else
   echo "bucket: $UPLOAD_BUCKET exists"
 fi
+# Default CMEK applies to objects written from now on; older objects keep Google-managed encryption.
+if [[ -n "${UPLOAD_KMS_KEY:-}" ]]; then
+  gcloud storage buckets update "gs://$UPLOAD_BUCKET" --default-encryption-key="$UPLOAD_KMS_KEY"
+fi
 
 # --- Artifact Registry for the LiteLLM image -------------------------------------------
 if ! gcloud artifacts repositories describe "$AR_REPO" --location="$REGION" >/dev/null 2>&1; then
@@ -82,7 +86,8 @@ done
 # roles/aiplatform.user: Vertex AI RAG Engine corpora (knowledge). Files are uploaded directly by the backend,
 # so the RAG service agent needs no access to our bucket.
 # roles/secretmanager.admin: connector credentials are created/deleted by the API (one secret per credential field).
-for ROLE in roles/datastore.user roles/secretmanager.secretAccessor roles/secretmanager.admin roles/dlp.user roles/logging.logWriter roles/run.invoker roles/aiplatform.user; do
+# roles/dlp.inspectTemplatesReader: deid uses the DLP_INSPECT_TEMPLATE (dlp.user alone cannot read templates).
+for ROLE in roles/datastore.user roles/secretmanager.secretAccessor roles/secretmanager.admin roles/dlp.user roles/dlp.inspectTemplatesReader roles/logging.logWriter roles/run.invoker roles/aiplatform.user; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:${BACKEND_SA_EMAIL}" --role="$ROLE" --condition=None >/dev/null
 done
 gcloud storage buckets add-iam-policy-binding "gs://$UPLOAD_BUCKET" \
