@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import type { AgentOut, Citation, RunResponse, StepTrace } from "../types";
+import type { AgentOut, Citation, RunResponse, Role, StepTrace } from "../types";
 import { ErrorBox, Icon, Spinner, fmtTime } from "../components/ui";
 import { currentName, currentUid } from "../mock";
 
@@ -12,7 +12,7 @@ const SUGGESTIONS = ["請摘要重點並列出注意事項", "轉為台語繁體
 /** Which definition the playground runs: the owner's draft, the live snapshot, or the snapshot waiting for publish review. */
 type Target = "draft" | "published" | "review";
 
-export default function Sandbox({ role }: { role: string }) {
+export default function Sandbox({ role }: { role: Role }) {
   const { id } = useParams();
   const nav = useNavigate();
   const [params] = useSearchParams();
@@ -28,7 +28,8 @@ export default function Sandbox({ role }: { role: string }) {
   const [showTrace, setShowTrace] = useState<number | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
 
-  const editable = !!agent && agent.owner_uid === currentUid();
+  // A demoted owner (role user) only runs the published version, like any other colleague.
+  const editable = !!agent && agent.owner_uid === currentUid() && role !== "user";
   const pending = agent?.review?.state === "pending" ? agent.review : null;
   const reviewVersion = target === "review" ? pending?.version : undefined;
 
@@ -37,10 +38,10 @@ export default function Sandbox({ role }: { role: string }) {
     setAgent(null); setMsgs([]); setSession(undefined); setErr("");
     api.getAgent(id).then((a) => {
       setAgent(a);
-      const mine = a.owner_uid === currentUid();
+      const mine = a.owner_uid === currentUid() && role !== "user";
       setTarget(params.get("version") && a.review?.state === "pending" && (mine || admin) ? "review" : mine ? "draft" : "published");
     }).catch((e) => setErr(String(e)));
-  }, [id, params, admin]);
+  }, [id, params, admin, role]);
   const switchTarget = (t: Target) => { setTarget(t); setSession(undefined); setMsgs([]); };
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, busy]);
 
@@ -87,7 +88,7 @@ export default function Sandbox({ role }: { role: string }) {
   return (
     <div className="flex h-full flex-col">
       <section className="flex shrink-0 flex-wrap items-center gap-4 border-b border-hairline bg-white px-5 py-3">
-        <button className="btn-ghost px-2" onClick={() => nav(editable ? `/studio/${agent.id}` : "/sandbox")}><Icon name="arrow_back" /></button>
+        <button className="btn-ghost px-2" onClick={() => nav(editable ? `/studio/${agent.id}` : role === "user" ? "/hub" : "/sandbox")}><Icon name="arrow_back" /></button>
         <div className="min-w-0 flex-1 leading-tight">
           <p className="flex flex-wrap items-center gap-2 text-lg font-bold">{agent.name}
             <span className="chip">沙盒驗證階段 {agent.status === "published" ? `(v${agent.version} 已發布)` : "(草稿)"}</span></p>

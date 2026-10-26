@@ -2,12 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { User } from "firebase/auth";
 import { api } from "../api";
-import { CATEGORIES, emptyAgent, type AgentOut, type HubStats } from "../types";
+import { CATEGORIES, emptyAgent, type AgentOut, type HubStats, type Role } from "../types";
 import { CATEGORY_ICON, Empty, ErrorBox, Icon, Spinner, StatusPill, fmtTime } from "../components/ui";
 
 type Filter = "all" | "mine" | "clinical" | "admin" | "consultation" | "published";
 
-export default function Hub({ user, role }: { user: User; role: string }) {
+export default function Hub({ user, role }: { user: User; role: Role }) {
+  const builder = role !== "user"; // run-only users chat with published agents and build nothing
   const nav = useNavigate();
   const [agents, setAgents] = useState<AgentOut[] | null>(null);
   const [stats, setStats] = useState<HubStats | null>(null);
@@ -17,7 +18,8 @@ export default function Hub({ user, role }: { user: User; role: string }) {
   const [err, setErr] = useState("");
 
   const load = () => {
-    api.listAgents().then(setAgents).catch((e) => setErr(String(e)));
+    // A demoted owner still gets their drafts from the API; run-only users can only chat with published ones.
+    api.listAgents().then((all) => setAgents(builder ? all : all.filter((a) => a.status === "published"))).catch((e) => setErr(String(e)));
     api.stats().then(setStats).catch(() => undefined);
   };
   useEffect(load, []);
@@ -61,10 +63,12 @@ export default function Hub({ user, role }: { user: User; role: string }) {
             院內跨科團隊已發布 <b className="text-primary-dark">{stats?.hospital_published ?? "—"} 個專科臨床代理人</b>。利用臨床安全提示詞、院內指引檢索增強 (RAG) 與 Google Cloud Vertex AI，加速全院無紙化與高精準度醫療協作。
           </p>
         </div>
-        <div className="flex flex-col gap-2">
-          <button className="btn-primary px-5 py-3 text-base" onClick={create}><Icon name="add_circle" />+ 建立新 Agent</button>
-          <button className="btn-secondary" onClick={() => nav("/knowledge")}><Icon name="menu_book" className="text-[18px]" />查看院內知識庫</button>
-        </div>
+        {builder && (
+          <div className="flex flex-col gap-2">
+            <button className="btn-primary px-5 py-3 text-base" onClick={create}><Icon name="add_circle" />+ 建立新 Agent</button>
+            <button className="btn-secondary" onClick={() => nav("/knowledge")}><Icon name="menu_book" className="text-[18px]" />查看院內知識庫</button>
+          </div>
+        )}
       </section>
 
       <section className="mt-5 grid gap-4 md:grid-cols-4">
@@ -103,14 +107,15 @@ export default function Hub({ user, role }: { user: User; role: string }) {
       <section className="mt-6">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="section-title">專科 Agent 總覽工作區 <span className="chip">{shown.length} 組臨床工作流</span></h2>
-          <p className="flex items-center gap-1 text-xs text-on-surface-variant"><Icon name="info" className="text-[16px]" />點擊「進入編輯」開啟視覺化節點工作台 (Agent Studio)；他人已發布的 Agent 可「進入對話」</p>
+          <p className="flex items-center gap-1 text-xs text-on-surface-variant"><Icon name="info" className="text-[16px]" />{builder ? "點擊「進入編輯」開啟視覺化節點工作台 (Agent Studio)；他人已發布的 Agent 可「進入對話」" : "點擊「進入對話」使用已發布的 Agent；如需自建 Agent，請洽管理員開通建置權限"}</p>
         </div>
         <ErrorBox msg={err} />
         {agents === null ? <div className="grid place-items-center py-20"><Spinner /></div> :
-          shown.length === 0 ? <Empty icon="smart_toy" title="還沒有符合條件的 Agent" hint="按「建立新 Agent」開始，或調整篩選條件。" action={<button className="btn-primary mt-2" onClick={create}>＋ 建立新 Agent</button>} /> : (
+          shown.length === 0 ? <Empty icon="smart_toy" title="還沒有符合條件的 Agent" hint={builder ? "按「建立新 Agent」開始，或調整篩選條件。" : "調整篩選條件，或等待各科發布 Agent。"} action={builder && <button className="btn-primary mt-2" onClick={create}>＋ 建立新 Agent</button>} /> : (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {shown.map((a) => {
               const mine = a.owner_uid === user.uid;
+              const editable = mine && builder;
               return (
                 <article key={a.id} className="card flex flex-col transition-shadow hover:shadow-float">
                   <div className="flex items-center gap-3 border-b border-hairline px-4 py-3">
@@ -132,7 +137,7 @@ export default function Hub({ user, role }: { user: User; role: string }) {
                   </div>
                   <div className="flex items-center justify-between border-t border-hairline px-4 py-3 text-xs text-on-surface-variant">
                     <span className="flex items-center gap-1"><Icon name="schedule" className="text-[14px]" />{fmtTime(a.updated_at)} 更新</span>
-                    {mine ? <button className="btn-primary" onClick={() => nav(`/studio/${a.id}`)}>進入編輯 <Icon name="arrow_forward" className="text-[16px]" /></button>
+                    {editable ? <button className="btn-primary" onClick={() => nav(`/studio/${a.id}`)}>進入編輯 <Icon name="arrow_forward" className="text-[16px]" /></button>
                       : <button className="btn-secondary" onClick={() => nav(`/sandbox/${a.id}`)}>進入對話 <Icon name="chat" className="text-[16px]" /></button>}
                   </div>
                 </article>

@@ -1,6 +1,6 @@
 import { idToken } from "./firebase";
 import { MOCK, mockApi } from "./mock";
-import type { ActionSpec, AgentIn, AgentOut, AgentUsageRow, AuditPage, AuditQuery, AuditSummary, ConnectorIn, ConnectorOut, ConnectorStats, ConnectorTypes, Flow, HubStats, SandboxActivity, DocCategory, KnowledgeDoc, Me, ModelGroupInfo, MonitoringQuery, MonitoringSummary, RunResponse, TestResult, UsageSort } from "./types";
+import type { ActionSpec, AgentIn, AgentOut, AgentUsageRow, AuditPage, AuditQuery, AuditSummary, ConnectorIn, ConnectorOut, ConnectorStats, ConnectorTypes, Flow, HubStats, SandboxActivity, UserDetail, UserDirectory, UserPatch, Role, DocCategory, KnowledgeDoc, Me, ModelGroupInfo, MonitoringQuery, MonitoringSummary, RunResponse, TestResult, UsageSort } from "./types";
 
 async function call<T>(path: string, init: RequestInit = {}, json = true): Promise<T> {
   const token = await idToken();
@@ -85,6 +85,13 @@ const realApi = {
   monitoringSummary: (q: MonitoringQuery) => call<MonitoringSummary>(`/api/monitoring/summary?${qs(q)}`),
   monitoringAgents: (q: MonitoringQuery, sort: UsageSort) => call<AgentUsageRow[]>(`/api/monitoring/agents?${qs(q)}&sort=${sort}`),
   monitoringCsv: (q: MonitoringQuery) => blob(`/api/monitoring/export.csv?${qs(q)}`),
+  listUsers: () => call<UserDirectory>("/api/users"),
+  getUser: (email: string) => call<UserDetail>(`/api/users/${encodeURIComponent(email)}`),
+  preregisterUser: (email: string, role: Role, department: string) =>
+    call<UserDetail>("/api/users", { method: "POST", body: JSON.stringify({ email, role, department }) }),
+  updateUser: (email: string, patch: UserPatch) => call<UserDetail>(`/api/users/${encodeURIComponent(email)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  cancelPreregistration: (email: string) => call<void>(`/api/users/${encodeURIComponent(email)}`, { method: "DELETE" }),
+  usersCsv: () => blob("/api/users/export.csv"),
 };
 
 export const api: typeof realApi = MOCK ? (mockApi as typeof realApi) : realApi;

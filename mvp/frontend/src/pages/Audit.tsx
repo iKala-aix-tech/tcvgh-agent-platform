@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import { DEPARTMENTS, type AuditCategory, type AuditEntry, type AuditPage, type AuditQuery, type AuditSeverity, type AuditSummary } from "../types";
+import { DEPARTMENTS, ROLE_LABEL, type AuditCategory, type AuditEntry, type AuditPage, type AuditQuery, type AuditSeverity, type AuditSummary, type Role } from "../types";
 import { Empty, ErrorBox, Icon, Spinner, fmtBytes } from "../components/ui";
 import { Delta, Kpi, Row } from "../components/Kpi";
 
@@ -12,18 +13,20 @@ export const ACTION_LABEL: Record<string, string> = {
   "agent.run": "推論呼叫", "agent.approve": "核准外部動作", "agent.reject": "駁回外部動作",
   "knowledge.upload": "上傳知識文件", "knowledge.delete": "移除知識文件", "knowledge.error": "知識索引失敗", "knowledge.reindex": "去識別化重建索引",
   "connector.create": "新增連接器", "connector.update": "更新連接器設定", "connector.delete": "刪除連接器", "connector.test": "連線測試", "connector.invoke": "連接器調用",
-  "monitoring.export": "匯出成本報表", "audit.export": "匯出稽核報表",
+  "monitoring.export": "匯出成本報表", "audit.export": "匯出稽核報表", "users.export": "匯出帳號清冊",
+  "user.first_login": "首次登入", "user.preregister": "預先登錄帳號", "user.preregister_cancel": "取消預先登錄", "user.role": "變更角色",
+  "user.suspend": "暫停帳號", "user.reactivate": "恢復帳號", "user.update": "更新帳號資料",
 };
 const CAT: Record<AuditCategory, { label: string; icon: string; chip: string; dot: string; bar: string }> = {
   inference: { label: "Agent 推論", icon: "smart_toy", chip: "bg-primary-tint text-primary-dark", dot: "bg-primary", bar: "bg-primary" },
   connector: { label: "連接器調用", icon: "cable", chip: "bg-secondary-container/60 text-on-secondary-container", dot: "bg-secondary", bar: "bg-primary-fixed-dim" },
   build: { label: "建置與知識", icon: "construction", chip: "bg-tertiary-fixed/70 text-tertiary", dot: "bg-tertiary", bar: "bg-tertiary" },
-  access: { label: "金鑰與匯出", icon: "key", chip: "bg-warning-container text-warning", dot: "bg-warning", bar: "bg-warning" },
+  access: { label: "帳號、金鑰與匯出", icon: "key", chip: "bg-warning-container text-warning", dot: "bg-warning", bar: "bg-warning" },
   other: { label: "其他", icon: "more_horiz", chip: "bg-surface-container-high text-on-surface-variant", dot: "bg-outline", bar: "bg-outline-variant" },
 };
 const TABS: { id: string; label: string }[] = [
   { id: "", label: "全部軌跡 (All Logs)" }, { id: "inference", label: "Agent 推論 (Inference)" }, { id: "connector", label: "連接器 & MCP (Connectors)" },
-  { id: "build", label: "建置與知識 (Build)" }, { id: "access", label: "金鑰與匯出 (Keys & Export)" }, { id: "alerts", label: "異常警示 (Alerts)" },
+  { id: "build", label: "建置與知識 (Build)" }, { id: "access", label: "帳號、金鑰與匯出 (Access & Export)" }, { id: "alerts", label: "異常警示 (Alerts)" },
 ];
 const SEVERITIES: { id: "" | AuditSeverity; label: string }[] = [
   { id: "", label: "所有狀態" }, { id: "info", label: "一般紀錄 (Info)" }, { id: "success", label: "成功 (Success)" }, { id: "warning", label: "異常 / 失敗 (Warning)" },
@@ -79,6 +82,14 @@ function describe(e: AuditEntry): { text: string; sub?: string; subIcon?: string
     case "knowledge.reindex": return { text: `「${str(d.file)}」以去識別化文字重建索引`, sub: "原檔保留於 CMEK 加密儲存桶", subIcon: "verified_user", subTone: "ok" };
     case "knowledge.delete": return { text: `移除「${str(d.file)}」` };
     case "knowledge.error": return { text: `「${str(d.file)}」索引失敗`, sub: str(d.error), subIcon: "error", subTone: "warn" };
+    case "user.first_login": return { text: `首次登入平台，角色為${ROLE_LABEL[str(d.role) as Role] ?? str(d.role)}`, sub: d.preregistered ? "使用管理員預先登錄的角色" : undefined, subIcon: "how_to_reg", subTone: "muted" };
+    case "user.preregister": return { text: `預先登錄 ${e.target_label}，角色為${ROLE_LABEL[str(d.role) as Role] ?? str(d.role)}` };
+    case "user.preregister_cancel": return { text: `取消 ${e.target_label} 的預先登錄` };
+    case "user.role": return { text: `角色：${ROLE_LABEL[str(d.old) as Role] ?? (str(d.old) || "—")} → ${ROLE_LABEL[str(d.new) as Role] ?? str(d.new)}`, sub: str(d.reason), subIcon: "edit_note", subTone: "muted" };
+    case "user.suspend": return { text: "暫停帳號：無法登入與呼叫平台 API", sub: `${str(d.reason)}${d.firebase_synced === false ? "（Firebase 帳號停用失敗，僅由平台阻擋）" : ""}`, subIcon: "person_off", subTone: "warn" };
+    case "user.reactivate": return { text: "恢復帳號存取", sub: str(d.reason), subIcon: "how_to_reg", subTone: "ok" };
+    case "user.update": return { text: `所屬科別：${str(d.old) || "未設定"} → ${str(d.department) || "未設定"}` };
+    case "users.export": return { text: `匯出帳號清冊${d.rows != null ? ` · ${fmtInt(Number(d.rows))} 列` : ""}`, subIcon: "download", subTone: "muted" };
     case "monitoring.export":
     case "audit.export": return { text: `匯出 ${str(d.range_from)} ～ ${str(d.range_to)}${d.rows != null ? ` · ${fmtInt(Number(d.rows))} 列` : ""}`, sub: d.department ? `科別：${str(d.department)}` : undefined, subIcon: "download", subTone: "muted" };
     default: return { text: Object.entries(d).map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(",") : str(v)}`).join(" · ") || "—" };
@@ -86,13 +97,15 @@ function describe(e: AuditEntry): { text: string; sub?: string; subIcon?: string
 }
 
 export default function Audit() {
+  // Deep link from the account page: /audit?q=<email>&range=30d
+  const [params] = useSearchParams();
   const [tab, setTab] = useState("");
-  const [range, setRange] = useState<Range>("7d");
+  const [range, setRange] = useState<Range>(() => (RANGES.some((r) => r.id === params.get("range")) ? params.get("range") as Range : "7d"));
   const [custom, setCustom] = useState(rangeDates("7d"));
   const [department, setDepartment] = useState("");
   const [severity, setSeverity] = useState("");
-  const [qInput, setQInput] = useState("");
-  const [q, setQ] = useState("");
+  const [qInput, setQInput] = useState(() => params.get("q") ?? "");
+  const [q, setQ] = useState(() => params.get("q") ?? "");
   const [cursors, setCursors] = useState<(string | null)[]>([null]); // cursors[i] opens page i
   const [pageIdx, setPageIdx] = useState(0);
   const [page, setPage] = useState<AuditPage | null>(null);
@@ -142,7 +155,7 @@ export default function Audit() {
         <div className="max-w-3xl">
           <h1 className="flex flex-wrap items-center gap-2 text-2xl font-bold"><span className="h-7 w-1.5 rounded-full bg-primary-dark" />資安審計與操作軌跡日誌<span className="chip">Firestore · 僅追加不可改</span></h1>
           <p className="mt-2 text-sm leading-6 text-on-surface-variant">
-            管理員檢視：全院所有人員對 Agent 的建立、發布、推論呼叫、知識文件、連接器調用與憑證變更，以及報表匯出。
+            管理員檢視：全院所有人員對 Agent 的建立、發布、推論呼叫、知識文件、連接器調用與憑證變更、帳號角色與狀態異動，以及報表匯出。
             使用者輸入在進入平台時即去識別化，對話內容與連接器憑證都不寫入稽核紀錄。
           </p>
         </div>
@@ -289,10 +302,10 @@ function EventRow({ e, open, onToggle }: { e: AuditEntry; open: boolean; onToggl
           {e.target_kind ? (
             <>
               <p className={`flex items-center gap-1.5 font-semibold ${warn ? "text-error" : "text-primary-dark"}`}>
-                <Icon name={e.target_kind === "connector" ? "cable" : e.target_kind === "agent" ? "smart_toy" : "description"} className="shrink-0 text-[16px]" /><span className="truncate">{e.target_label}</span>
+                <Icon name={e.target_kind === "connector" ? "cable" : e.target_kind === "agent" ? "smart_toy" : e.target_kind === "user" ? "person" : "description"} className="shrink-0 text-[16px]" /><span className="truncate">{e.target_label}</span>
               </p>
               <p className="mt-0.5 truncate font-mono text-[10px] text-outline">
-                {e.target_kind === "connector" && e.agent_label ? `經由 ${e.agent_label}` : [e.department, e.target_id].filter(Boolean).join(" · ") || "平台"}
+                {e.target_kind === "connector" && e.agent_label ? `經由 ${e.agent_label}` : e.target_kind === "user" ? "平台帳號" : [e.department, e.target_id].filter(Boolean).join(" · ") || "平台"}
               </p>
             </>
           ) : <span className="text-outline">—</span>}
@@ -318,7 +331,7 @@ function EventRow({ e, open, onToggle }: { e: AuditEntry; open: boolean; onToggl
                 <Meta k="操作者" v={e.actor_email || "—"} />
                 <Meta k="操作者 UID" v={e.actor} mono />
                 <Meta k="動作" v={`${ACTION_LABEL[e.action] ?? e.action}（${e.action}）`} />
-                {e.target_id && <Meta k={e.target_kind === "connector" ? "連接器 ID" : "Agent ID"} v={e.target_id} mono />}
+                {e.target_id && <Meta k={{ connector: "連接器 ID", agent: "Agent ID", document: "文件 ID", user: "帳號" }[e.target_kind as string] ?? "目標 ID"} v={e.target_id} mono />}
                 {e.agent_label && e.target_kind === "connector" && <Meta k="呼叫來源 Agent" v={e.agent_label} />}
                 <Meta k="所屬科別" v={e.department || "—"} />
               </dl>

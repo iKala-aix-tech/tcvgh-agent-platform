@@ -4,12 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from google.cloud import firestore
 
 from .. import db
-from ..auth import User, current_user
+from ..auth import User, current_user, require_builder
 from ..engine import connectors as eng
 from ..engine import secrets as sm
 from ..schemas import ConnectorIn, ConnectorOut, ConnectorStats
 
-router = APIRouter(prefix="/api/connectors", tags=["connectors"])
+# Run-only users never see connectors (Hub + chat only); tool nodes call them server-side.
+router = APIRouter(prefix="/api/connectors", tags=["connectors"], dependencies=[Depends(require_builder)])
 
 
 def _usage() -> dict[str, int]:

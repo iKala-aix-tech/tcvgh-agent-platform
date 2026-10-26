@@ -87,7 +87,8 @@ done
 # so the RAG service agent needs no access to our bucket.
 # roles/secretmanager.admin: connector credentials are created/deleted by the API (one secret per credential field).
 # roles/dlp.inspectTemplatesReader: deid uses the DLP_INSPECT_TEMPLATE (dlp.user alone cannot read templates).
-for ROLE in roles/datastore.user roles/secretmanager.secretAccessor roles/secretmanager.admin roles/dlp.user roles/dlp.inspectTemplatesReader roles/logging.logWriter roles/run.invoker roles/aiplatform.user; do
+# roles/firebaseauth.admin: suspending an account disables its Firebase user and revokes its refresh tokens.
+for ROLE in roles/datastore.user roles/secretmanager.secretAccessor roles/secretmanager.admin roles/dlp.user roles/dlp.inspectTemplatesReader roles/logging.logWriter roles/run.invoker roles/aiplatform.user roles/firebaseauth.admin; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:${BACKEND_SA_EMAIL}" --role="$ROLE" --condition=None >/dev/null
 done
 gcloud storage buckets add-iam-policy-binding "gs://$UPLOAD_BUCKET" \

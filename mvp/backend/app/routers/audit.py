@@ -40,13 +40,16 @@ CATEGORY = {
     "knowledge.update": "build",
     # Credentials live in Secret Manager behind connector writes; exports take data out of the platform.
     "connector.create": "access", "connector.update": "access", "connector.delete": "access",
-    "monitoring.export": "access", "audit.export": "access",
+    "monitoring.export": "access", "audit.export": "access", "users.export": "access",
+    # Accounts & access (routers/users.py): role / status changes and pre-registrations.
+    "user.first_login": "access", "user.preregister": "access", "user.preregister_cancel": "access", "user.role": "access",
+    "user.suspend": "access", "user.reactivate": "access", "user.update": "access",
 }
 CATEGORIES = {"inference", "connector", "build", "access", "other"}
 SEVERITIES = {"info", "success", "warning"}
-_WARN_ACTIONS = {"knowledge.error", "agent.reject", "agent.publish_reject"}
-_SUCCESS_ACTIONS = {"agent.publish", "agent.approve", "agent.publish_approve"}
-_SYSTEM_TARGET = {"monitoring.export": "監控成本報表", "audit.export": "稽核報表"}
+_WARN_ACTIONS = {"knowledge.error", "agent.reject", "agent.publish_reject", "user.suspend"}
+_SUCCESS_ACTIONS = {"agent.publish", "agent.approve", "agent.publish_approve", "user.reactivate"}
+_SYSTEM_TARGET = {"monitoring.export": "監控成本報表", "audit.export": "稽核報表", "users.export": "帳號清冊"}
 
 
 def category_of(action: str) -> str:
@@ -96,6 +99,8 @@ def _entry(doc_id: str, r: dict, lk: _Lookups) -> AuditEntry:
         kind, tid, label = "agent", agent_id, agent_label
     elif action.startswith("knowledge.") and details.get("doc_id"):
         kind, tid, label = "document", str(details["doc_id"]), details.get("file") or details["doc_id"]
+    elif action.startswith("user.") and details.get("target_email"):
+        kind, tid, label = "user", str(details["target_email"]), str(details["target_email"])
     elif action in _SYSTEM_TARGET:
         kind, label = "system", _SYSTEM_TARGET[action]
     return AuditEntry(id=doc_id, actor=r.get("actor", ""), actor_email=r.get("actor_email", ""), action=action,

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
-import { CATEGORIES, DEPARTMENTS, emptyAgent, type AgentOut, type HubStats, type SandboxActivity } from "../types";
+import { CATEGORIES, DEPARTMENTS, emptyAgent, type AgentOut, type HubStats, type Role, type SandboxActivity } from "../types";
 import { CATEGORY_ICON, Empty, ErrorBox, Icon, Spinner, StatusPill, fmtTime } from "../components/ui";
 import { currentUid } from "../mock";
 
@@ -26,7 +26,7 @@ const ApprovedBadge = ({ a }: { a: AgentOut }) => (
   </span>
 );
 
-export default function SandboxCenter({ role }: { role: string }) {
+export default function SandboxCenter({ role }: { role: Role }) {
   const nav = useNavigate();
   const admin = role === "admin";
   const [agents, setAgents] = useState<AgentOut[] | null>(null);

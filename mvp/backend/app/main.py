@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .auth import User, current_user
 from .config import settings
 from .engine import llm
-from .routers import agents, audit, connectors, knowledge, monitoring, runs
+from .routers import agents, audit, connectors, knowledge, monitoring, runs, users
 
 app = FastAPI(title="TCVGH Agent Platform API", version="0.2.0")
 
@@ -19,6 +19,7 @@ app.include_router(knowledge.router)
 app.include_router(audit.router)
 app.include_router(connectors.router)
 app.include_router(monitoring.router)
+app.include_router(users.router)
 
 
 @app.get("/api/health")
@@ -37,4 +38,4 @@ def model_groups(user: User = Depends(current_user)):
 
 @app.get("/api/me")
 def me(user: User = Depends(current_user)):
-    return {"uid": user.uid, "email": user.email, "name": user.name, "role": user.role}
+    return {"uid": user.uid, "email": user.email, "name": user.name, "role": user.role, "department": user.department}

@@ -9,7 +9,10 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
   const go = async () => {
     setBusy(true); setErr("");
-    try { await signInWithGoogle(); } catch (e) { setErr(String(e)); } finally { setBusy(false); }
+    try { await signInWithGoogle(); } catch (e) {
+      // Suspending an account also disables its Firebase user (routers/users.py).
+      setErr(String(e).includes("auth/user-disabled") ? "此帳號已被管理員暫停使用，如需恢復請聯絡資訊室。" : String(e));
+    } finally { setBusy(false); }
   };
   return (
     <div className="min-h-full bg-[radial-gradient(circle_at_1px_1px,#dfe3e2_1px,transparent_0)] [background-size:28px_28px]">

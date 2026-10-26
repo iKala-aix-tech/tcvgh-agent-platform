@@ -18,13 +18,14 @@ from fastapi.responses import PlainTextResponse
 from google.cloud import firestore, storage
 
 from .. import db
-from ..auth import User, current_user, require_admin
+from ..auth import User, current_user, require_admin, require_builder
 from ..config import settings
 from ..engine import deid
 from ..engine.extract import NoTextError, extract_text
 from ..schemas import DEPARTMENTS, AgentRef, DocCategory, DocumentOut, DocumentPatch
 
-router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
+# Run-only users never see the library (Hub + chat only); retrieval runs server-side inside a flow.
+router = APIRouter(prefix="/api/knowledge", tags=["knowledge"], dependencies=[Depends(require_builder)])
 log = logging.getLogger(__name__)
 
 ALLOWED_SUFFIXES = {".pdf", ".txt", ".md", ".docx", ".pptx", ".html", ".csv", ".json"}

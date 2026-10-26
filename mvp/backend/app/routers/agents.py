@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from google.cloud import firestore
 
 from .. import db
-from ..auth import User, current_user, require_admin
+from ..auth import User, current_user, require_admin, require_builder
 from ..engine.flow import validate_flow
 from ..schemas import AgentActivity, AgentIn, AgentOut, Flow, HubStats, ReviewDecision, SandboxActivity
 
@@ -27,7 +27,8 @@ def _doc_to_out(doc) -> AgentOut:
 
 
 def can_edit(data: dict, user: User) -> bool:
-    return data.get("owner_uid") == user.uid or user.role == "admin"
+    """Owner (while still a builder) or any admin. A demoted owner keeps the agent but only runs its published version."""
+    return user.role == "admin" or (data.get("owner_uid") == user.uid and user.role == "builder")
 
 
 def load_editable(agent_id: str, user: User):
@@ -84,7 +85,7 @@ def hub_stats(user: User = Depends(current_user)):
 
 
 @router.get("/activity", response_model=SandboxActivity)
-def sandbox_activity(user: User = Depends(current_user)):
+def sandbox_activity(user: User = Depends(require_builder)):
     """Today's runs per agent (audit `agent.run` rows) + the review queue size for the sandbox page."""
     c = db.client()
     start = db.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -119,7 +120,7 @@ def review_queue(user: User = Depends(require_admin)):
 
 
 @router.post("", response_model=AgentOut, status_code=201)
-def create_agent(body: AgentIn, user: User = Depends(current_user)):
+def create_agent(body: AgentIn, user: User = Depends(require_builder)):
     ref = db.client().collection("agents").document()
     data = {**body.model_dump(), "owner_uid": user.uid, "owner_email": user.email, "status": "draft",
             "version": 0, "created_at": db.now(), "updated_at": db.now()}
@@ -134,12 +135,12 @@ def get_agent(agent_id: str, user: User = Depends(current_user)):
 
 
 @router.post("/validate")
-def validate(flow: Flow, user: User = Depends(current_user)):
+def validate(flow: Flow, user: User = Depends(require_builder)):
     return {"problems": validate_flow(flow)}
 
 
 @router.put("/{agent_id}", response_model=AgentOut)
-def update_agent(agent_id: str, body: AgentIn, user: User = Depends(current_user)):
+def update_agent(agent_id: str, body: AgentIn, user: User = Depends(require_builder)):
     snap = load_editable(agent_id, user)
     data = {**body.model_dump(), "updated_at": db.now()}
     snap.reference.update(data)
@@ -177,7 +178,7 @@ def publish_agent(agent_id: str, user: User = Depends(require_admin)):
 
 
 @router.post("/{agent_id}/publish-request", response_model=AgentOut)
-def request_publish(agent_id: str, user: User = Depends(current_user)):
+def request_publish(agent_id: str, user: User = Depends(require_builder)):
     """Freeze the draft as the next version and queue it for admin review. Later draft edits are
     not part of the request; a rejected snapshot is overwritten by the next request."""
     snap = load_editable(agent_id, user)
@@ -196,7 +197,7 @@ def request_publish(agent_id: str, user: User = Depends(current_user)):
 
 
 @router.post("/{agent_id}/publish-request/withdraw", response_model=AgentOut)
-def withdraw_publish(agent_id: str, user: User = Depends(current_user)):
+def withdraw_publish(agent_id: str, user: User = Depends(require_builder)):
     snap = load_editable(agent_id, user)
     review = (snap.to_dict() or {}).get("review") or {}
     if review.get("state") != "pending":
@@ -228,7 +229,7 @@ def review_publish(agent_id: str, body: ReviewDecision, user: User = Depends(req
 
 
 @router.post("/{agent_id}/unpublish", response_model=AgentOut)
-def unpublish_agent(agent_id: str, user: User = Depends(current_user)):
+def unpublish_agent(agent_id: str, user: User = Depends(require_builder)):
     snap = load_editable(agent_id, user)
     snap.reference.update({"status": "draft", "updated_at": db.now()})
     db.audit(user.uid, "agent.unpublish", user.email, agent_id=agent_id)
@@ -236,7 +237,7 @@ def unpublish_agent(agent_id: str, user: User = Depends(current_user)):
 
 
 @router.delete("/{agent_id}", status_code=204)
-def delete_agent(agent_id: str, user: User = Depends(current_user)):
+def delete_agent(agent_id: str, user: User = Depends(require_builder)):
     snap = load_editable(agent_id, user)
     data = snap.to_dict() or {}
     # Library documents are shared and stay. Only agents not yet migrated still own a per-agent corpus.

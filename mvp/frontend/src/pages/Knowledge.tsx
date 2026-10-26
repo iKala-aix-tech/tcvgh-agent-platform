@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
-import { DEPARTMENTS, DOC_CATEGORIES, type DocCategory, type KnowledgeDoc } from "../types";
+import { DEPARTMENTS, DOC_CATEGORIES, type DocCategory, type KnowledgeDoc, type Role } from "../types";
 import DocUploader from "../components/DocUploader";
 import { Empty, ErrorBox, Icon, Modal, Spinner, fmtBytes, fmtTime } from "../components/ui";
 import { currentUid } from "../mock";
@@ -19,7 +19,7 @@ const Masked = ({ text }: { text: string }) => (
   </pre>
 );
 
-export default function Knowledge({ role }: { role: string }) {
+export default function Knowledge({ role }: { role: Role }) {
   const nav = useNavigate();
   const admin = role === "admin";
   const uid = currentUid();

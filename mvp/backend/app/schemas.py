@@ -222,7 +222,7 @@ class AuditEntry(BaseModel):
     # Derived at read time from action + details (nothing extra is stored on the audit doc).
     category: str = "other"  # inference | connector | build | access | other
     severity: str = "info"  # info | success | warning
-    target_kind: str = ""  # agent | connector | system | ""
+    target_kind: str = ""  # agent | connector | document | user | system | ""
     target_id: str = ""
     target_label: str = ""
     agent_label: str = ""  # name of the agent involved (also set for connector calls made by an agent)
@@ -376,3 +376,67 @@ class AgentUsageRow(BaseModel):
     tokens: int = 0
     cost_usd: float = 0.0
     avg_latency_ms: int = 0
+
+
+# ---- accounts & access (admin-only page 帳號與存取權限)
+Role = Literal["admin", "builder", "user"]
+AccountStatus = Literal["active", "suspended"]
+
+
+class UserOut(BaseModel):
+    email: str
+    uid: str = ""  # "" until a pre-registered person signs in for the first time
+    name: str = ""
+    role: Role = "user"  # effective role (ADMIN_EMAILS are always admin)
+    status: AccountStatus = "active"
+    department: str = ""
+    bootstrap_admin: bool = False  # listed in ADMIN_EMAILS: role/status are not editable here
+    created_at: Any = None
+    created_by: str = ""  # admin who pre-registered the account; "" when created by signing in
+    first_login_at: Any = None
+    last_seen_at: Any = None  # last API call, written at most every 10 minutes
+    status_reason: str = ""
+    status_changed_at: Any = None
+    status_changed_by: str = ""
+    role_changed_at: Any = None
+    role_changed_by: str = ""
+
+    @field_validator("department", mode="before")
+    @classmethod
+    def _known_department(cls, v: object) -> str:
+        return v if isinstance(v, str) and v in DEPARTMENTS else ""
+
+
+class OwnedCounts(BaseModel):
+    agents: int = 0
+    published_agents: int = 0
+    connectors: int = 0
+    documents: int = 0
+
+
+class UserDetail(UserOut):
+    owned: OwnedCounts = Field(default_factory=OwnedCounts)
+
+
+class DomainCount(BaseModel):
+    domain: str
+    users: int
+
+
+class UserDirectory(BaseModel):
+    users: list[UserOut]
+    domains: list[DomainCount]  # ALLOWED_DOMAINS (read-only here) with account counts
+
+
+class UserCreate(BaseModel):
+    """Pre-register someone who has not signed in yet."""
+    email: str = Field(min_length=3, max_length=254)
+    role: Role = "user"
+    department: str = ""
+
+
+class UserPatch(BaseModel):
+    role: Role | None = None
+    status: AccountStatus | None = None
+    department: str | None = None
+    reason: str = Field(default="", max_length=200)  # required when role or status changes

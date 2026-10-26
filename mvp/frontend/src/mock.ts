@@ -1,6 +1,6 @@
 /** In-memory API used when VITE_MOCK_API=1 (design review / demos without GCP). Same surface as ./api. */
 import { auth } from "./firebase";
-import { emptyAgent, type ActionSpec, type AgentIn, type AgentOut, type AgentUsageRow, type AuditCategory, type AuditEntry, type AuditPage, type AuditQuery, type AuditSeverity, type AuditSummary, type ConnectorIn, type ConnectorOut, type ConnectorStats, type ConnectorTypes, type Flow, type HubStats, type SandboxActivity, type KnowledgeDoc, type ModelGroupInfo, type Me, type MonitoringQuery, type MonitoringSummary, type RunResponse, type TestResult, type UsageSort } from "./types";
+import { emptyAgent, type ActionSpec, type AgentIn, type AgentOut, type AgentUsageRow, type AuditCategory, type AuditEntry, type AuditPage, type AuditQuery, type AuditSeverity, type AuditSummary, type ConnectorIn, type ConnectorOut, type ConnectorStats, type ConnectorTypes, type Flow, type HubStats, type SandboxActivity, type KnowledgeDoc, type ModelGroupInfo, type Me, type MonitoringQuery, type MonitoringSummary, type RunResponse, type TestResult, type UsageSort, type UserDetail, type UserOut, type UserPatch, type Role } from "./types";
 import connectorTypes from "./connectorTypes.json";
 
 export const MOCK = import.meta.env.VITE_MOCK_API === "1";
@@ -211,7 +211,30 @@ const monitoringAgents = (q: MonitoringQuery, sort: UsageSort): AgentUsageRow[] 
 
 const delay = <T,>(v: T, ms = 150) => new Promise<T>((r) => setTimeout(() => r(v), ms));
 const now = () => new Date().toISOString();
-const mockRole = () => new URLSearchParams(window.location.search).get("role") ?? "admin";
+const mockRole = () => (new URLSearchParams(window.location.search).get("role") ?? "admin") as Role;
+
+// ---- accounts (帳號與存取權限). chlin@ is the ADMIN_EMAILS bootstrap admin in mock mode.
+const U = (email: string, name: string, role: Role, department: string, seenH: number | null, p: Partial<UserOut> = {}): UserOut => ({
+  email, uid: seenH === null ? "" : `u-${email.split("@")[0]}`, name, role, status: "active", department, bootstrap_admin: false,
+  created_at: ago(24 * 40), created_by: "", first_login_at: seenH === null ? null : ago(24 * 30), last_seen_at: seenH === null ? null : ago(seenH),
+  status_reason: "", status_changed_at: null, status_changed_by: "", role_changed_at: null, role_changed_by: "", ...p,
+});
+let users: UserOut[] = [
+  U(mockUser.email, mockUser.displayName, "admin", "心臟血管中心", 0.02, { bootstrap_admin: true }),
+  U("ycchen@vghtc.gov.tw", "陳玉芬 護理長", "builder", "急診醫學部", 0.2),
+  U("jtlee@vghtc.gov.tw", "李俊德 藥師", "builder", "藥劑部", 1.5),
+  U("wtko@vghtc.gov.tw", "柯宛廷 主任", "admin", "放射線部", 3, { role_changed_at: ago(24 * 9), role_changed_by: mockUser.email }),
+  U("ylchang@vghtc.gov.tw", "張雅嵐 研究員", "user", "臨床試驗與轉譯研究中心", 2),
+  U("cwwang@vghtc.gov.tw", "王志偉 架構師", "builder", "智慧醫療組 (IT)", 4),
+  U("hhtsai@vghtc.gov.tw", "蔡欣慧 護理師", "user", "護理部", 26),
+  U("mhwu@vghtc.gov.tw", "吳明輝 醫師", "user", "內科部", 24 * 12, { status: "suspended", status_reason: "留職停薪，暫停存取", status_changed_at: ago(24 * 5), status_changed_by: mockUser.email }),
+  U("sylin@vghtc.gov.tw", "", "builder", "神經醫學中心", null, { created_by: mockUser.email, created_at: ago(20) }),
+];
+const findUser = (email: string) => { const u = users.find((x) => x.email === email); if (!u) throw new Error("404 user not found"); return u; };
+const detail = (u: UserOut): UserDetail => {
+  const own = agents.filter((a) => a.owner_uid === u.uid);
+  return { ...u, owned: { agents: own.length, published_agents: own.filter((a) => a.status === "published").length, connectors: u.uid === mockUser.uid ? 2 : 0, documents: u.uid === mockUser.uid ? 3 : 0 } };
+};
 const setAgent = (id: string, f: (a: AgentOut) => AgentOut) => { const a = f(find(id)); agents = agents.map((x) => (x.id === id ? a : x)); return delay(a); };
 const find = (id: string) => { const a = agents.find((x) => x.id === id); if (!a) throw new Error("404 agent not found"); return a; };
 
@@ -223,8 +246,8 @@ export const mockApi = {
     { id: "budget", models: ["gemini-3-flash-preview"], configured: true, fallbacks: [{ name: "fast", models: ["gemini-3-flash-preview"] }] },
     { id: "sovereign", models: [], configured: false, fallbacks: [] },
   ] }),
-  // `?role=builder` previews the non-admin experience (publish requests instead of direct publish).
-  me: () => delay<Me>({ uid: mockUser.uid, email: mockUser.email, name: mockUser.displayName, role: mockRole() }),
+  // `?role=builder` previews the non-admin experience (publish requests instead of direct publish); `?role=user` the run-only one.
+  me: () => delay<Me>({ uid: mockUser.uid, email: mockUser.email, name: mockUser.displayName, role: mockRole(), department: "心臟血管中心" }),
   stats: () => delay<HubStats>({ my_agents: agents.filter((a) => a.owner_uid === "u-lin").length, my_published: 2, hospital_published: agents.filter((a) => a.status === "published").length, runs_today: 1840, knowledge_files: docs.length }),
   listAgents: () => delay(agents.filter((a) => a.owner_uid === "u-lin" || a.status === "published")),
   getAgent: (id: string) => delay(find(id)),
@@ -277,4 +300,19 @@ export const mockApi = {
   monitoringSummary: (q: MonitoringQuery) => delay(monitoringSummary(q), 400),
   monitoringAgents: (q: MonitoringQuery, sort: UsageSort) => delay(monitoringAgents(q, sort), 300),
   monitoringCsv: (q: MonitoringQuery) => delay(new Blob([`\ufeffagent_id,name,requests,cost_usd\n${monitoringAgents(q, "cost_usd").map((r) => `${r.agent_id},${r.name},${r.requests},${r.cost_usd.toFixed(4)}`).join("\n")}`], { type: "text/csv" })),
+  listUsers: () => delay({ users, domains: [{ domain: "vghtc.gov.tw", users: users.length }] }),
+  getUser: (email: string) => delay(detail(findUser(email))),
+  preregisterUser: (email: string, role: Role, department: string) => {
+    if (users.some((u) => u.email === email.toLowerCase())) throw new Error("409 this e-mail already has an account");
+    const u = U(email.toLowerCase(), "", role, department, null, { created_by: mockUser.email, created_at: now() }); users = [u, ...users]; return delay(detail(u));
+  },
+  updateUser: (email: string, p: UserPatch) => {
+    const cur = findUser(email);
+    const u: UserOut = { ...cur, ...(p.department !== undefined ? { department: p.department } : {}),
+      ...(p.role && p.role !== cur.role ? { role: p.role, role_changed_at: now(), role_changed_by: mockUser.email } : {}),
+      ...(p.status && p.status !== cur.status ? { status: p.status, status_reason: p.reason ?? "", status_changed_at: now(), status_changed_by: mockUser.email } : {}) };
+    users = users.map((x) => (x.email === email ? u : x)); return delay(detail(u));
+  },
+  cancelPreregistration: (email: string) => { users = users.filter((x) => x.email !== email); return delay(undefined); },
+  usersCsv: () => delay(new Blob([`\ufeffemail,name,role,status,department\n${users.map((u) => [u.email, u.name, u.role, u.status, u.department].join(",")).join("\n")}`], { type: "text/csv" })),
 };

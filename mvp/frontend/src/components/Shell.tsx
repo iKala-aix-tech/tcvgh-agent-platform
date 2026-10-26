@@ -3,20 +3,32 @@ import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import type { User } from "firebase/auth";
 import { signOut } from "../firebase";
 import { MOCK } from "../mock";
+import type { Role } from "../types";
 import { Icon } from "./ui";
 
-const NAV = [
+// `min` = lowest role that sees the item (user < builder < admin). Run-only users get the Hub only.
+const RANK: Record<Role, number> = { user: 0, builder: 1, admin: 2 };
+type NavItem = { group: string } | { to: string; icon: string; label: string; min: Role };
+const NAV: NavItem[] = [
   { group: "院區智能總覽" },
-  { to: "/hub", icon: "hub", label: "Agent Hub / 我的工作台" },
-  { to: "/connectors", icon: "cable", label: "Connectors 連接器" },
-  { to: "/sandbox", icon: "rocket_launch", label: "沙盒測試與發布中心" },
-  { to: "/monitoring", icon: "monitoring", label: "Agent 監控與成本", admin: true },
+  { to: "/hub", icon: "hub", label: "Agent Hub / 我的工作台", min: "user" },
+  { to: "/connectors", icon: "cable", label: "Connectors 連接器", min: "builder" },
+  { to: "/sandbox", icon: "rocket_launch", label: "沙盒測試與發布中心", min: "builder" },
+  { to: "/monitoring", icon: "monitoring", label: "Agent 監控與成本", min: "admin" },
   { group: "治理與臨床指引" },
-  { to: "/knowledge", icon: "menu_book", label: "院內指引與醫學知識庫" },
-  { to: "/audit", icon: "shield", label: "資安審計與推論軌跡", admin: true },
+  { to: "/knowledge", icon: "menu_book", label: "院內指引與醫學知識庫", min: "builder" },
+  { to: "/audit", icon: "shield", label: "資安審計與推論軌跡", min: "admin" },
+  { to: "/access", icon: "manage_accounts", label: "帳號與存取權限", min: "admin" },
 ];
 
-export default function Shell({ user, role }: { user: User; role: string }) {
+const sees = (role: Role, n: { min: Role }) => RANK[role] >= RANK[n.min];
+/** Items under the group header at `i`, up to the next header (headers with nothing visible are hidden). */
+const groupItems = (i: number) => {
+  const end = NAV.findIndex((x, j) => j > i && "group" in x);
+  return NAV.slice(i + 1, end < 0 ? undefined : end).filter((x): x is Extract<NavItem, { to: string }> => "to" in x);
+};
+
+export default function Shell({ user, role }: { user: User; role: Role }) {
   const nav = useNavigate();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("nav.collapsed") === "1");
   useEffect(() => localStorage.setItem("nav.collapsed", collapsed ? "1" : "0"), [collapsed]);
@@ -37,7 +49,7 @@ export default function Shell({ user, role }: { user: User; role: string }) {
         </span>
         <div className="flex items-center gap-3 text-right">
           <span className="leading-tight">
-            <span className="block text-sm font-semibold">{user.displayName ?? user.email}{role === "admin" && <span className="chip ml-1">ADMIN</span>}</span>
+            <span className="block text-sm font-semibold">{user.displayName ?? user.email}{role === "admin" ? <span className="chip ml-1">ADMIN</span> : role === "user" && <span className="chip ml-1">一般使用者</span>}</span>
             <span className="block font-mono text-[10px] text-outline">{user.email}</span>
           </span>
           {user.photoURL ? <img src={user.photoURL} className="h-9 w-9 rounded-full border border-hairline" alt="" referrerPolicy="no-referrer" /> : <span className="grid h-9 w-9 place-items-center rounded-full bg-primary-dark text-white"><Icon name="person" /></span>}
@@ -46,12 +58,12 @@ export default function Shell({ user, role }: { user: User; role: string }) {
       </header>
       <div className="flex min-h-0 flex-1">
         <aside className={`hidden shrink-0 flex-col border-r border-hairline bg-white pb-3 transition-[width] duration-200 md:flex ${collapsed ? "w-16 px-2" : "w-60 px-3"}`}>
-          {NAV.filter((n) => !("admin" in n && n.admin) || role === "admin").map((n, i) =>
+          {NAV.filter((n, i) => ("to" in n ? sees(role, n) : groupItems(i).some((x) => sees(role, x)))).map((n, i) =>
             "group" in n ? (
               collapsed ? <div key={i} className="mx-auto my-3 h-px w-6 bg-hairline" /> : <div key={i} className="nav-group">{n.group}</div>
             ) : (
-              <NavLink key={n.to} to={n.to!} title={n.label} className={({ isActive }) => `nav-item ${isActive ? "active" : ""} ${collapsed ? "justify-center px-0" : ""}`}>
-                <Icon name={n.icon!} className="text-[20px]" />{!collapsed && <span>{n.label}</span>}
+              <NavLink key={n.to} to={n.to} title={n.label} className={({ isActive }) => `nav-item ${isActive ? "active" : ""} ${collapsed ? "justify-center px-0" : ""}`}>
+                <Icon name={n.icon} className="text-[20px]" />{!collapsed && <span>{n.label}</span>}
               </NavLink>
             ),
           )}

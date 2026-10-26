@@ -181,7 +181,7 @@ export interface AuditEntry {
   at?: string | null;
   category: AuditCategory;
   severity: AuditSeverity;
-  target_kind: "agent" | "connector" | "document" | "system" | "";
+  target_kind: "agent" | "connector" | "document" | "user" | "system" | "";
   target_id: string;
   target_label: string;
   agent_label: string;
@@ -208,7 +208,27 @@ export interface HubStats {
   knowledge_files: number;
 }
 
-export interface Me { uid: string; email: string; name: string; role: string }
+export type Role = "admin" | "builder" | "user";
+export interface Me { uid: string; email: string; name: string; role: Role; department: string }
+
+// ---- accounts & access (admin-only)
+export type AccountStatus = "active" | "suspended";
+export interface UserOut {
+  email: string; uid: string; name: string; role: Role; status: AccountStatus; department: string;
+  bootstrap_admin: boolean; // in ADMIN_EMAILS: role and status are fixed by the deployment
+  created_at: string | null; created_by: string; first_login_at: string | null; last_seen_at: string | null;
+  status_reason: string; status_changed_at: string | null; status_changed_by: string; role_changed_at: string | null; role_changed_by: string;
+}
+export interface UserDetail extends UserOut { owned: { agents: number; published_agents: number; connectors: number; documents: number } }
+/** What each role can really do (shown on the account pages). Order = role cards top to bottom. */
+export const ROLES: { id: Role; label: string; en: string; icon: string; desc: string; can: string[] }[] = [
+  { id: "admin", label: "系統管理員", en: "Admin", icon: "admin_panel_settings", desc: "可編輯與發布全院任何 Agent、核可發布申請，並檢視監控成本、資安稽核軌跡，管理同仁帳號與權限。", can: ["發布核可", "監控與成本", "資安稽核", "帳號管理"] },
+  { id: "builder", label: "Agent 建置者", en: "Builder", icon: "construction", desc: "可在 Agent Studio 建立自己的 Agent、於沙盒測試並申請全院發布，新增連接器與上傳院內知識文件。", can: ["Agent Studio", "申請發布", "連接器", "知識庫上傳"] },
+  { id: "user", label: "一般使用者", en: "User", icon: "person", desc: "只能在 Agent Hub 與全院已發布的 Agent 對話，看不到建置、連接器與知識庫功能。新登入的同仁預設為此角色。", can: ["已發布 Agent 對話"] },
+];
+export const ROLE_LABEL: Record<Role, string> = { admin: "系統管理員", builder: "Agent 建置者", user: "一般使用者" };
+export interface UserDirectory { users: UserOut[]; domains: { domain: string; users: number }[] }
+export interface UserPatch { role?: Role; status?: AccountStatus; department?: string; reason?: string }
 
 // ---- monitoring (admin-only)
 export interface ModelSlice { model: string; requests: number; tokens: number; cost_usd: number }
